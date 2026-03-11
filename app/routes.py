@@ -7,19 +7,14 @@ from typing import Any, Callable
 
 from flask import Flask, jsonify, render_template, request
 
-from app.model_loader import (
-    ModelArtifacts,
-    create_artifact_loader,
-    get_last_training_error,
-    is_training_in_progress,
-)
+from app.model_loader import ModelArtifacts, create_artifact_loader
 from app.utils import append_jsonl, fetch_article_text, read_jsonl, run_prediction
 from dashboard.analytics import build_analytics_summary
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 
 
-def _as_bool(value: Any, default: bool = True) -> bool:
+def _as_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
     if isinstance(value, bool):
@@ -32,16 +27,6 @@ def _as_bool(value: Any, default: bool = True) -> bool:
 def _resolve_artifact_paths(config: dict[str, Any]) -> tuple[Path, Path]:
     model_path = Path(config.get("MODEL_PATH", BASE_DIR / "models" / "best_model.joblib"))
     vectorizer_path = Path(config.get("VECTORIZER_PATH", BASE_DIR / "models" / "tfidf_vectorizer.joblib"))
-
-    if model_path.exists() and vectorizer_path.exists():
-        return model_path, vectorizer_path
-
-    # Backward compatibility with legacy artifact names.
-    legacy_model = BASE_DIR / "logistic_regression_model.pkl"
-    legacy_vectorizer = BASE_DIR / "tfidf_vectorizer.pkl"
-    if legacy_model.exists() and legacy_vectorizer.exists():
-        return legacy_model, legacy_vectorizer
-
     return model_path, vectorizer_path
 
 
@@ -49,11 +34,7 @@ def _get_artifacts(app: Flask) -> ModelArtifacts:
     artifacts = app.extensions.get("model_artifacts")
     if artifacts is None:
         model_path, vectorizer_path = _resolve_artifact_paths(app.config)
-        artifacts = create_artifact_loader(
-            model_path,
-            vectorizer_path,
-            auto_train=bool(app.config.get("AUTO_TRAIN_ON_REQUEST", False)),
-        )
+        artifacts = create_artifact_loader(model_path, vectorizer_path)
         app.extensions["model_artifacts"] = artifacts
     return artifacts
 
@@ -63,18 +44,11 @@ def _predict_payload(
     text: str,
     source: str,
     source_url: str | None = None,
-    include_shap: bool = True,
-    include_lime: bool = True,
+    include_shap: bool = False,
+    include_lime: bool = False,
 ) -> dict:
     artifacts = _get_artifacts(app)
     artifacts.ensure_loaded()
-    if not artifacts.is_ready:
-        if is_training_in_progress():
-            raise RuntimeError("Model is being trained. Please retry in a minute.")
-        last_error = get_last_training_error()
-        if last_error:
-            raise RuntimeError(f"Model training failed: {last_error}")
-        raise RuntimeError("Model is not ready yet. Training may still be running. Try again shortly.")
 
     result = run_prediction(
         raw_text=text,
@@ -103,7 +77,6 @@ def _predict_payload(
         },
     }
     append_jsonl(app.config["ANALYTICS_LOG_PATH"], log_payload)
-
     return response
 
 
@@ -115,15 +88,14 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
     app.config.update(
         MODEL_PATH=os.getenv("MODEL_PATH", str(BASE_DIR / "models" / "best_model.joblib")),
         VECTORIZER_PATH=os.getenv("VECTORIZER_PATH", str(BASE_DIR / "models" / "tfidf_vectorizer.joblib")),
-        # Render filesystem is ephemeral; this path is safe for runtime write operations.
         ANALYTICS_LOG_PATH=os.getenv(
             "ANALYTICS_LOG_PATH",
             str(Path(tempfile.gettempdir()) / "prediction_logs.jsonl"),
         ),
-        AUTO_TRAIN_ON_REQUEST=os.getenv("AUTO_TRAIN_ON_REQUEST", "0").strip().lower() in {"1", "true", "yes", "on"},
     )
     if config:
         app.config.update(config)
+
     _get_artifacts(app)
 
     @app.get("/")
@@ -143,8 +115,6 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
                 "model_loaded": artifacts.is_ready,
                 "model_path": str(artifacts.model_path),
                 "vectorizer_path": str(artifacts.vectorizer_path),
-                "training_in_progress": is_training_in_progress(),
-                "last_training_error": get_last_training_error(),
             }
         )
 
@@ -157,8 +127,8 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
     def predict():
         data = request.get_json(silent=True) or {}
         text = data.get("text", "")
-        include_shap = _as_bool(data.get("include_shap"), default=True)
-        include_lime = _as_bool(data.get("include_lime"), default=True)
+        include_shap = _as_bool(data.get("include_shap"), default=False)
+        include_lime = _as_bool(data.get("include_lime"), default=False)
 
         if not isinstance(text, str) or not text.strip():
             return jsonify({"error": "Input text is required."}), 400
@@ -172,10 +142,8 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
                 include_lime=include_lime,
             )
             return jsonify(response)
-        except RuntimeError as exc:
-            return jsonify({"error": str(exc)}), 503
         except FileNotFoundError as exc:
-            return jsonify({"error": f"Model artifacts not found: {exc}"}), 500
+            return jsonify({"error": str(exc)}), 503
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except Exception as exc:
@@ -185,8 +153,8 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
     def analyze_url():
         data = request.get_json(silent=True) or {}
         url = data.get("url", "")
-        include_shap = _as_bool(data.get("include_shap"), default=True)
-        include_lime = _as_bool(data.get("include_lime"), default=True)
+        include_shap = _as_bool(data.get("include_shap"), default=False)
+        include_lime = _as_bool(data.get("include_lime"), default=False)
 
         if not isinstance(url, str) or not url.strip():
             return jsonify({"error": "A valid URL is required."}), 400
@@ -211,7 +179,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
                     **prediction,
                 }
             )
-        except RuntimeError as exc:
+        except FileNotFoundError as exc:
             return jsonify({"error": str(exc)}), 503
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
@@ -219,3 +187,4 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             return jsonify({"error": f"URL analysis failed: {exc}"}), 500
 
     return app
+
