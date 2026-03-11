@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import logging
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -96,6 +97,7 @@ def ensure_model_exists(
     train_script_path: str | Path | None = None,
     base_dir: str | Path | None = None,
     blocking: bool = False,
+    allow_training: bool = True,
 ) -> bool:
     """Ensure model artifacts exist, training them if missing."""
     model_path = Path(model_path)
@@ -105,6 +107,14 @@ def ensure_model_exists(
 
     if model_path.exists() and vectorizer_path.exists():
         return True
+
+    if not allow_training:
+        message = (
+            f"Model artifacts are missing at {model_path} and auto-training is disabled."
+        )
+        LOGGER.error(message)
+        _set_last_training_error(message)
+        return False
 
     LOGGER.warning("Model not found. Training model...")
     model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -150,7 +160,13 @@ def check_or_train_model(
         train_script_path=train_script_path,
         base_dir=base_dir,
         blocking=True,
+        allow_training=True,
     )
+
+
+def is_runtime_auto_train_enabled() -> bool:
+    value = os.getenv("AUTO_TRAIN_ON_REQUEST", "0").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -158,6 +174,7 @@ class ModelArtifacts:
     model_path: Path
     vectorizer_path: Path
     metadata_path: Path | None = None
+    auto_train: bool = False
     model: object | None = None
     vectorizer: object | None = None
     metadata: dict = field(default_factory=dict)
@@ -179,7 +196,12 @@ class ModelArtifacts:
                 return
 
             if not (self.model_path.exists() and self.vectorizer_path.exists()):
-                trained = ensure_model_exists(self.model_path, self.vectorizer_path, blocking=False)
+                trained = ensure_model_exists(
+                    self.model_path,
+                    self.vectorizer_path,
+                    blocking=False,
+                    allow_training=self.auto_train,
+                )
                 if not trained:
                     LOGGER.error("Model artifacts are still unavailable after training attempt.")
                     return
@@ -200,9 +222,13 @@ def create_artifact_loader(
     model_path: str | Path,
     vectorizer_path: str | Path,
     metadata_path: str | Path | None = None,
+    auto_train: bool | None = None,
 ) -> ModelArtifacts:
+    if auto_train is None:
+        auto_train = is_runtime_auto_train_enabled()
     return ModelArtifacts(
         model_path=Path(model_path),
         vectorizer_path=Path(vectorizer_path),
         metadata_path=Path(metadata_path) if metadata_path else None,
+        auto_train=auto_train,
     )

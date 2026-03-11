@@ -16,3 +16,7 @@ services:
         value: 3.11.11
       - key: ANALYTICS_LOG_PATH
         value: /tmp/prediction_logs.jsonl
+      - key: AUTO_TRAIN_ON_BOOT
+        value: "0"
+      - key: AUTO_TRAIN_ON_REQUEST
+        value: "0"

@@ -49,7 +49,11 @@ def _get_artifacts(app: Flask) -> ModelArtifacts:
     artifacts = app.extensions.get("model_artifacts")
     if artifacts is None:
         model_path, vectorizer_path = _resolve_artifact_paths(app.config)
-        artifacts = create_artifact_loader(model_path, vectorizer_path)
+        artifacts = create_artifact_loader(
+            model_path,
+            vectorizer_path,
+            auto_train=bool(app.config.get("AUTO_TRAIN_ON_REQUEST", False)),
+        )
         app.extensions["model_artifacts"] = artifacts
     return artifacts
 
@@ -116,6 +120,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             "ANALYTICS_LOG_PATH",
             str(Path(tempfile.gettempdir()) / "prediction_logs.jsonl"),
         ),
+        AUTO_TRAIN_ON_REQUEST=os.getenv("AUTO_TRAIN_ON_REQUEST", "0").strip().lower() in {"1", "true", "yes", "on"},
     )
     if config:
         app.config.update(config)
@@ -138,6 +143,8 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
                 "model_loaded": artifacts.is_ready,
                 "model_path": str(artifacts.model_path),
                 "vectorizer_path": str(artifacts.vectorizer_path),
+                "training_in_progress": is_training_in_progress(),
+                "last_training_error": get_last_training_error(),
             }
         )
 
