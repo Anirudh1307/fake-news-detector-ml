@@ -17,7 +17,7 @@ logging.basicConfig(
 
 def build_app():
     # Startup model check before serving requests.
-    ensure_model_exists(MODEL_PATH, VECTORIZER_PATH)
+    ensure_model_exists(MODEL_PATH, VECTORIZER_PATH, blocking=False)
     return create_app(
         {
             "MODEL_PATH": str(MODEL_PATH),

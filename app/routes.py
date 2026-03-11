@@ -7,7 +7,12 @@ from typing import Any, Callable
 
 from flask import Flask, jsonify, render_template, request
 
-from app.model_loader import ModelArtifacts, create_artifact_loader
+from app.model_loader import (
+    ModelArtifacts,
+    create_artifact_loader,
+    get_last_training_error,
+    is_training_in_progress,
+)
 from app.utils import append_jsonl, fetch_article_text, read_jsonl, run_prediction
 from dashboard.analytics import build_analytics_summary
 
@@ -60,6 +65,11 @@ def _predict_payload(
     artifacts = _get_artifacts(app)
     artifacts.ensure_loaded()
     if not artifacts.is_ready:
+        if is_training_in_progress():
+            raise RuntimeError("Model is being trained. Please retry in a minute.")
+        last_error = get_last_training_error()
+        if last_error:
+            raise RuntimeError(f"Model training failed: {last_error}")
         raise RuntimeError("Model is not ready yet. Training may still be running. Try again shortly.")
 
     result = run_prediction(

@@ -17,7 +17,7 @@ MODEL_PATH = Path(os.getenv("MODEL_PATH", BASE_DIR / "models" / "best_model.jobl
 VECTORIZER_PATH = Path(os.getenv("VECTORIZER_PATH", BASE_DIR / "models" / "tfidf_vectorizer.joblib"))
 
 # Startup check for Render/Docker cold start.
-ensure_model_exists(MODEL_PATH, VECTORIZER_PATH)
+ensure_model_exists(MODEL_PATH, VECTORIZER_PATH, blocking=False)
 
 app = create_app(
     {

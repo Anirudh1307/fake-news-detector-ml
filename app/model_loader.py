@@ -5,13 +5,89 @@ import logging
 from pathlib import Path
 import subprocess
 import sys
-from threading import Lock
+from threading import Lock, Thread
+from typing import Any
 
 import joblib
 
 LOGGER = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_TRAIN_SCRIPT = BASE_DIR / "training" / "train_models.py"
+_TRAINING_THREAD: Thread | None = None
+_TRAINING_STATE_LOCK = Lock()
+_LAST_TRAINING_ERROR: str | None = None
+
+
+def is_training_in_progress() -> bool:
+    with _TRAINING_STATE_LOCK:
+        return _TRAINING_THREAD is not None and _TRAINING_THREAD.is_alive()
+
+
+def get_last_training_error() -> str | None:
+    with _TRAINING_STATE_LOCK:
+        return _LAST_TRAINING_ERROR
+
+
+def _set_last_training_error(message: str | None) -> None:
+    global _LAST_TRAINING_ERROR
+    with _TRAINING_STATE_LOCK:
+        _LAST_TRAINING_ERROR = message
+
+
+def _run_training_subprocess(
+    command: list[str],
+    work_dir: Path,
+    model_path: Path,
+    vectorizer_path: Path,
+) -> bool:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(work_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        LOGGER.exception("Failed to start model training process.")
+        _set_last_training_error("Failed to start model training process.")
+        return False
+
+    if result.stdout:
+        LOGGER.info(result.stdout.strip())
+    if result.stderr:
+        LOGGER.warning(result.stderr.strip())
+
+    if result.returncode != 0:
+        error_message = f"Model training failed with exit code {result.returncode}"
+        LOGGER.error(error_message)
+        _set_last_training_error(error_message)
+        return False
+
+    LOGGER.info("Model training complete.")
+    if model_path.exists() and vectorizer_path.exists():
+        LOGGER.info("Model successfully trained and saved.")
+
+    _set_last_training_error(None)
+    return True
+
+
+def _start_background_training(
+    command: list[str],
+    work_dir: Path,
+    model_path: Path,
+    vectorizer_path: Path,
+) -> None:
+    global _TRAINING_THREAD
+
+    def _target():
+        _run_training_subprocess(command, work_dir, model_path=model_path, vectorizer_path=vectorizer_path)
+
+    with _TRAINING_STATE_LOCK:
+        if _TRAINING_THREAD is not None and _TRAINING_THREAD.is_alive():
+            return
+        _TRAINING_THREAD = Thread(target=_target, daemon=True, name="model-training-thread")
+        _TRAINING_THREAD.start()
 
 
 def ensure_model_exists(
@@ -19,6 +95,7 @@ def ensure_model_exists(
     vectorizer_path: str | Path,
     train_script_path: str | Path | None = None,
     base_dir: str | Path | None = None,
+    blocking: bool = False,
 ) -> bool:
     """Ensure model artifacts exist, training them if missing."""
     model_path = Path(model_path)
@@ -38,31 +115,22 @@ def ensure_model_exists(
         "--models-dir",
         str(model_path.parent),
     ]
-
-    try:
-        result = subprocess.run(
+    if not blocking:
+        _start_background_training(
             command,
-            cwd=str(work_dir),
-            capture_output=True,
-            text=True,
-            check=False,
+            work_dir,
+            model_path=model_path,
+            vectorizer_path=vectorizer_path,
         )
-    except Exception:
-        LOGGER.exception("Failed to start model training process.")
         return False
 
-    if result.stdout:
-        LOGGER.info(result.stdout.strip())
-    if result.stderr:
-        LOGGER.warning(result.stderr.strip())
-
-    if result.returncode != 0:
-        LOGGER.error("Model training failed with exit code %s", result.returncode)
-        return False
-
-    if model_path.exists() and vectorizer_path.exists():
-        LOGGER.info("Model training complete.")
-        LOGGER.info("Model successfully trained and saved.")
+    trained = _run_training_subprocess(
+        command,
+        work_dir,
+        model_path=model_path,
+        vectorizer_path=vectorizer_path,
+    )
+    if trained and model_path.exists() and vectorizer_path.exists():
         return True
 
     LOGGER.error("Training finished but artifacts are still missing.")
@@ -81,6 +149,7 @@ def check_or_train_model(
         vectorizer_path=vectorizer_path,
         train_script_path=train_script_path,
         base_dir=base_dir,
+        blocking=True,
     )
 
 
@@ -110,7 +179,7 @@ class ModelArtifacts:
                 return
 
             if not (self.model_path.exists() and self.vectorizer_path.exists()):
-                trained = ensure_model_exists(self.model_path, self.vectorizer_path)
+                trained = ensure_model_exists(self.model_path, self.vectorizer_path, blocking=False)
                 if not trained:
                     LOGGER.error("Model artifacts are still unavailable after training attempt.")
                     return
