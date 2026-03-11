@@ -13,6 +13,24 @@ _SINGLETON_LOCK = Lock()
 _SINGLETON: "ModelArtifacts | None" = None
 
 
+class ArtifactLoadError(RuntimeError):
+    """Base error for model/vectorizer loading failures."""
+
+
+class MissingModelArtifactsError(ArtifactLoadError):
+    """Raised when one or more expected artifact files do not exist."""
+
+    def __init__(self, missing_files: list[Path]) -> None:
+        self.missing_files = missing_files
+        missing = ", ".join(str(path) for path in missing_files)
+        super().__init__(
+            f"Model artifacts missing: {missing}. "
+            "Train locally and deploy artifacts: "
+            "python training/train_models.py --fake-path data/Fake.csv "
+            "--true-path data/True.csv --models-dir models"
+        )
+
+
 @dataclass
 class ModelArtifacts:
     model_path: Path
@@ -20,6 +38,14 @@ class ModelArtifacts:
     model: object | None = None
     vectorizer: object | None = None
     _lock: Lock = field(default_factory=Lock)
+
+    def missing_files(self) -> list[Path]:
+        missing: list[Path] = []
+        if not self.model_path.exists():
+            missing.append(self.model_path)
+        if not self.vectorizer_path.exists():
+            missing.append(self.vectorizer_path)
+        return missing
 
     def ensure_loaded(self) -> None:
         """Lazy-load model artifacts once and reuse for all requests."""
@@ -30,23 +56,25 @@ class ModelArtifacts:
             if self.is_ready:
                 return
 
-            missing_files: list[str] = []
-            if not self.model_path.exists():
-                missing_files.append(str(self.model_path))
-            if not self.vectorizer_path.exists():
-                missing_files.append(str(self.vectorizer_path))
-
+            missing_files = self.missing_files()
             if missing_files:
-                missing = ", ".join(missing_files)
-                raise FileNotFoundError(
-                    f"Model artifacts missing: {missing}. "
-                    "Train locally and deploy artifacts: "
-                    "python training/train_models.py --fake-path data/Fake.csv "
-                    "--true-path data/True.csv --models-dir models"
+                LOGGER.error(
+                    "Model artifacts missing. model_path=%s vectorizer_path=%s",
+                    self.model_path,
+                    self.vectorizer_path,
                 )
+                raise MissingModelArtifactsError(missing_files)
 
-            self.model = joblib.load(self.model_path)
-            self.vectorizer = joblib.load(self.vectorizer_path)
+            try:
+                self.model = joblib.load(self.model_path)
+                self.vectorizer = joblib.load(self.vectorizer_path)
+            except Exception as exc:
+                self.model = None
+                self.vectorizer = None
+                raise ArtifactLoadError(
+                    f"Failed to load model artifacts from '{self.model_path}' "
+                    f"and '{self.vectorizer_path}': {exc}"
+                ) from exc
             LOGGER.info("Model loaded successfully")
 
     @property
@@ -74,4 +102,3 @@ def create_artifact_loader(
         elif _SINGLETON.model_path != model_path or _SINGLETON.vectorizer_path != vectorizer_path:
             _SINGLETON = ModelArtifacts(model_path=model_path, vectorizer_path=vectorizer_path)
         return _SINGLETON
-

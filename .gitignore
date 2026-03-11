@@ -213,3 +213,6 @@ data/
 *.joblib
 models/reports/
 models/prediction_logs.jsonl
+!models/best_model.joblib
+!models/tfidf_vectorizer.joblib
+!models/metadata.joblib

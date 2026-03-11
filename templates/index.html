@@ -184,7 +184,7 @@
             }
 
             try {
-                const data = await callApi('/predict', { text, include_shap: true, include_lime: true });
+                const data = await callApi('/predict', { text, include_shap: false, include_lime: false });
                 showResult(data);
             } catch (error) {
                 showError(error.message);
@@ -199,7 +199,7 @@
             }
 
             try {
-                const data = await callApi('/analyze_url', { url, include_shap: true, include_lime: true });
+                const data = await callApi('/analyze_url', { url, include_shap: false, include_lime: false });
                 urlPreview.textContent = `URL Preview:\n${data.article_preview || ''}`;
                 showResult(data);
             } catch (error) {

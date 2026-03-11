@@ -4,19 +4,16 @@ services:
     env: python
     plan: free
     autoDeploy: true
-    buildCommand: |
-      pip install -r requirements.txt
-      if [ ! -f data/Fake.csv ] || [ ! -f data/True.csv ]; then
-        python prepare_liar_data.py --half-true drop
-      fi
-      python training/train_models.py --fake-path data/Fake.csv --true-path data/True.csv --models-dir models
-    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 1 --timeout 120 app:app
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
       - key: ANALYTICS_LOG_PATH
         value: /tmp/prediction_logs.jsonl
-      - key: AUTO_TRAIN_ON_BOOT
+      - key: ENABLE_SHAP
         value: "0"
-      - key: AUTO_TRAIN_ON_REQUEST
+      - key: ENABLE_LIME
         value: "0"
+      - key: MAX_INPUT_CHARS
+        value: "30000"

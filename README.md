@@ -301,24 +301,31 @@ docker run -p 5000:5000 fake-news-detector
 
 1. Push repo to GitHub.
 2. Create new Web Service in Render.
-3. Build command:
-   - `pip install -r requirements.txt && python training/train_models.py`
-4. Start command:
-   - `gunicorn --bind 0.0.0.0:$PORT app:app`
-5. Add persistent disk if you want to preserve analytics logs.
+3. Commit required artifacts:
+   - `models/best_model.joblib`
+   - `models/tfidf_vectorizer.joblib`
+4. Build command:
+   - `pip install --no-cache-dir -r requirements.txt`
+5. Start command:
+   - `gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 1 --timeout 120 app:app`
+6. Set environment variables:
+   - `ENABLE_SHAP=0`
+   - `ENABLE_LIME=0`
+   - `MAX_INPUT_CHARS=30000`
+7. Add persistent disk if you want to preserve analytics logs.
 
 ### Railway
 
 1. Create a new Railway project from GitHub repo.
 2. Railway detects Dockerfile automatically (recommended).
 3. If not using Docker:
-   - Install command: `pip install -r requirements.txt && python training/train_models.py`
-   - Start command: `gunicorn --bind 0.0.0.0:$PORT app:app`
+   - Install command: `pip install --no-cache-dir -r requirements.txt`
+   - Start command: `gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 1 --timeout 120 app:app`
 
 ## Notes
 
 - LIAR is statement-level data; this predicts linguistic credibility style, not definitive fact verification.
-- Keep `models/` artifacts available in deployment environment.
+- Keep `models/best_model.joblib` and `models/tfidf_vectorizer.joblib` available in deployment environment.
 - SHAP/LIME can add latency for online inference; disable via request flags if needed.
 
 ## License
