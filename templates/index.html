@@ -3,181 +3,216 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI News Authenticator</title>
-    <!-- Load Tailwind CSS -->
+    <title>Fake News Detector - AI Portfolio</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Using a sleek, modern font -->
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --primary: #0f766e;
+            --secondary: #f97316;
+            --surface: #f8fafc;
+        }
         body {
-            font-family: 'Poppins', sans-serif;
-            background-color: #eef2ff; /* Very light indigo background */
+            font-family: 'Manrope', sans-serif;
+            background: radial-gradient(circle at 20% 20%, #d1fae5 0%, #f8fafc 35%, #fff7ed 100%);
+            min-height: 100vh;
         }
-        .card {
-            box-shadow: 0 15px 30px -8px rgba(0, 0, 0, 0.1), 0 5px 15px -5px rgba(0, 0, 0, 0.06);
-            transition: all 0.3s;
-        }
-        .result-box {
-            border-left: 6px solid;
-            padding: 20px;
-            border-radius: 0.75rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        /* Color Palette */
-        .real-border { border-color: #10B981; } /* Emerald Green */
-        .fake-border { border-color: #EF4444; } /* Red */
-        .unknown-border { border-color: #6B7280; } /* Gray */
-        .real-text { color: #059669; } /* Darker Emerald */
-        .fake-text { color: #B91C1C; } /* Darker Red */
-        .unknown-text { color: #4B5563; } /* Darker Gray */
-        
-        /* Loading Spinner */
-        .loading-animation {
-            border: 4px solid #e5e7eb;
-            border-top: 4px solid #4F46E5; /* Indigo-600 */
-            border-radius: 50%;
-            width: 24px;
-            height: 24px;
-            animation: spin 1s linear infinite;
-            display: inline-block;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+        .card-shadow {
+            box-shadow: 0 20px 45px rgba(15, 23, 42, 0.12);
         }
     </style>
 </head>
-<body class="p-4 md:p-8 min-h-screen flex justify-center items-start">
+<body class="text-slate-800">
+    <main class="max-w-5xl mx-auto px-4 py-10">
+        <header class="mb-8">
+            <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+                <div>
+                    <p class="uppercase tracking-wider text-xs font-bold text-teal-700">Production-Ready AI Portfolio Project</p>
+                    <h1 class="text-4xl md:text-5xl font-extrabold leading-tight">Fake News Detector</h1>
+                    <p class="mt-2 text-slate-600 max-w-2xl">Multi-model ML inference with explainability (SHAP + LIME), URL ingestion, and analytics dashboard.</p>
+                </div>
+                <a href="/dashboard" class="inline-flex items-center justify-center rounded-xl bg-slate-900 text-white px-5 py-3 font-semibold hover:bg-slate-800 transition">
+                    Open Dashboard
+                </a>
+            </div>
+        </header>
 
-    <div class="w-full max-w-3xl mt-12">
-        <!-- Main Card -->
-        <div class="card bg-white p-8 md:p-12 rounded-2xl">
-            <h1 class="text-3xl font-bold text-center text-gray-800 mb-3">AI News Authenticator</h1>
-            <p class="text-center text-gray-500 mb-8 text-lg">Determine the linguistic style (Real vs. Fake) of an article.</p>
+        <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <article class="bg-white card-shadow rounded-2xl p-6">
+                <h2 class="text-xl font-bold mb-2">Analyze Raw Text</h2>
+                <p class="text-sm text-slate-600 mb-4">Paste a claim, post, or article snippet for fake/real prediction.</p>
+                <textarea id="text-input" rows="10" class="w-full rounded-xl border border-slate-300 p-3 focus:ring-2 focus:ring-teal-500 focus:outline-none" placeholder="Example: The economy has seen the highest growth in decades..."></textarea>
+                <div class="mt-4 flex gap-3">
+                    <button id="predict-btn" class="rounded-xl bg-teal-700 text-white px-5 py-3 font-semibold hover:bg-teal-600 transition">Predict Text</button>
+                    <button id="clear-text-btn" class="rounded-xl border border-slate-300 px-5 py-3 font-semibold hover:bg-slate-100 transition">Clear</button>
+                </div>
+            </article>
 
-            <!-- Input Area -->
-            <label for="news-text" class="block text-sm font-medium text-gray-700 mb-2">Paste Article Content</label>
-            <textarea id="news-text" rows="8" class="w-full border border-gray-300 rounded-xl p-4 focus:ring-indigo-500 focus:border-indigo-500 transition duration-150 ease-in-out resize-none" placeholder="E.g., 'WASHINGTON (Reuters) - U.S. consumer spending increased 0.5% in October...'"></textarea>
-            
-            <!-- Analyze Button -->
-            <button id="analyze-btn" onclick="analyzeNews()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 mt-5 rounded-xl transition duration-150 ease-in-out flex items-center justify-center shadow-lg hover:shadow-xl">
-                <span id="button-text">Analyze News</span>
-                <span id="loading-spinner" class="loading-animation hidden ml-3"></span>
-            </button>
-            
-            <!-- Result Display -->
-            <div id="result-container" class="mt-10 hidden">
-                <div id="prediction-box" class="result-box bg-gray-50">
-                    <div>
-                        <p class="text-sm font-medium text-gray-600 mb-1">Model Prediction</p>
-                        <h2 id="prediction-label" class="text-3xl font-bold"></h2>
-                    </div>
-                    <div class="text-right">
-                         <p class="text-sm font-medium text-gray-600 mb-1">Confidence</p>
-                        <p id="confidence-score" class="text-3xl font-bold"></p>
-                    </div>
+            <article class="bg-white card-shadow rounded-2xl p-6">
+                <h2 class="text-xl font-bold mb-2">Analyze News URL</h2>
+                <p class="text-sm text-slate-600 mb-4">Fetch full article text via <code>newspaper3k</code> and run inference.</p>
+                <input id="url-input" class="w-full rounded-xl border border-slate-300 p-3 focus:ring-2 focus:ring-orange-500 focus:outline-none" placeholder="https://example.com/news-story" />
+                <button id="url-btn" class="mt-4 rounded-xl bg-orange-600 text-white px-5 py-3 font-semibold hover:bg-orange-500 transition">Analyze URL</button>
+                <p id="url-preview" class="text-xs text-slate-500 mt-4 whitespace-pre-line"></p>
+            </article>
+        </section>
+
+        <section id="result-card" class="mt-8 bg-white card-shadow rounded-2xl p-6 hidden">
+            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                <div>
+                    <p class="text-xs uppercase tracking-wider text-slate-500 font-semibold">Prediction</p>
+                    <h3 id="prediction-label" class="text-3xl font-extrabold"></h3>
+                </div>
+                <div>
+                    <p class="text-xs uppercase tracking-wider text-slate-500 font-semibold">Confidence</p>
+                    <p id="confidence-value" class="text-3xl font-extrabold"></p>
                 </div>
             </div>
-            
-            <!-- Error Message -->
-            <div id="error-message" class="mt-8 hidden p-4 bg-red-100 border-l-4 border-red-500 text-red-700 rounded-lg">
-                <p class="font-semibold">Analysis Failed</p>
-                <p id="error-text" class="text-sm"></p>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
+                <div class="rounded-xl border border-red-200 bg-red-50 p-4">
+                    <h4 class="font-bold text-red-900 mb-2">Top Fake-Indicating Words</h4>
+                    <ul id="fake-words" class="space-y-1 text-sm"></ul>
+                </div>
+                <div class="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                    <h4 class="font-bold text-emerald-900 mb-2">Top Real-Indicating Words</h4>
+                    <ul id="real-words" class="space-y-1 text-sm"></ul>
+                </div>
             </div>
 
-        </div>
-    </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                <div class="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <h4 class="font-bold mb-2">SHAP Summary</h4>
+                    <ul id="shap-list" class="space-y-1 text-sm"></ul>
+                </div>
+                <div class="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <h4 class="font-bold mb-2">LIME Summary</h4>
+                    <ul id="lime-list" class="space-y-1 text-sm"></ul>
+                </div>
+            </div>
+        </section>
+
+        <section id="error-card" class="mt-8 hidden rounded-2xl bg-red-100 border border-red-300 p-4 text-red-800"></section>
+    </main>
 
     <script>
-        async function analyzeNews() {
-            const newsText = document.getElementById('news-text').value;
-            const resultContainer = document.getElementById('result-container');
-            const errorContainer = document.getElementById('error-message');
-            const buttonText = document.getElementById('button-text');
-            const loadingSpinner = document.getElementById('loading-spinner');
-            const analyzeBtn = document.getElementById('analyze-btn');
+        const resultCard = document.getElementById('result-card');
+        const errorCard = document.getElementById('error-card');
+        const predictionLabel = document.getElementById('prediction-label');
+        const confidenceValue = document.getElementById('confidence-value');
+        const fakeWords = document.getElementById('fake-words');
+        const realWords = document.getElementById('real-words');
+        const shapList = document.getElementById('shap-list');
+        const limeList = document.getElementById('lime-list');
+        const urlPreview = document.getElementById('url-preview');
 
-            // --- UI State: Loading ---
-            resultContainer.classList.add('hidden');
-            errorContainer.classList.add('hidden');
-            analyzeBtn.disabled = true;
-            buttonText.textContent = 'Analyzing...';
-            loadingSpinner.classList.remove('hidden');
+        function renderWordList(element, words, formatter) {
+            element.innerHTML = '';
+            if (!words || !words.length) {
+                const li = document.createElement('li');
+                li.textContent = 'No signals available.';
+                element.appendChild(li);
+                return;
+            }
 
-            if (!newsText.trim()) {
-                document.getElementById('error-text').textContent = 'Please enter some text to analyze.';
-                errorContainer.classList.remove('hidden');
-                analyzeBtn.disabled = false;
-                buttonText.textContent = 'Analyze News';
-                loadingSpinner.classList.add('hidden');
+            words.forEach((item) => {
+                const li = document.createElement('li');
+                li.textContent = formatter(item);
+                element.appendChild(li);
+            });
+        }
+
+        function showError(message) {
+            resultCard.classList.add('hidden');
+            errorCard.textContent = message;
+            errorCard.classList.remove('hidden');
+        }
+
+        function showResult(data) {
+            errorCard.classList.add('hidden');
+            resultCard.classList.remove('hidden');
+
+            predictionLabel.textContent = data.prediction;
+            confidenceValue.textContent = `${Number(data.confidence || 0).toFixed(2)}%`;
+
+            predictionLabel.className = 'text-3xl font-extrabold';
+            confidenceValue.className = 'text-3xl font-extrabold';
+            if (data.prediction === 'FAKE NEWS') {
+                predictionLabel.classList.add('text-red-700');
+                confidenceValue.classList.add('text-red-700');
+            } else {
+                predictionLabel.classList.add('text-emerald-700');
+                confidenceValue.classList.add('text-emerald-700');
+            }
+
+            renderWordList(fakeWords, data.top_fake_words, (item) => `${item.word}: ${Number(item.weight).toFixed(3)}`);
+            renderWordList(realWords, data.top_real_words, (item) => `${item.word}: ${Number(item.weight).toFixed(3)}`);
+
+            const shap = data.explanation?.shap;
+            if (shap?.available) {
+                renderWordList(shapList, shap.items, (item) => `${item.word}: ${Number(item.shap_value).toFixed(3)}`);
+            } else {
+                renderWordList(shapList, [{ word: shap?.reason || 'SHAP not available' }], (item) => item.word);
+            }
+
+            const lime = data.explanation?.lime;
+            if (lime?.available) {
+                renderWordList(limeList, lime.items, (item) => `${item.token}: ${Number(item.weight).toFixed(3)}`);
+            } else {
+                renderWordList(limeList, [{ token: lime?.reason || 'LIME not available' }], (item) => item.token);
+            }
+        }
+
+        async function callApi(url, payload) {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || 'Request failed');
+            }
+            return data;
+        }
+
+        document.getElementById('predict-btn').addEventListener('click', async () => {
+            const text = document.getElementById('text-input').value.trim();
+            if (!text) {
+                showError('Enter text before prediction.');
                 return;
             }
 
             try {
-                const response = await fetch('/predict', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ text: newsText })
-                });
-
-                const data = await response.json();
-
-                if (!response.ok || data.error) {
-                    throw new Error(data.error || `HTTP error! status: ${response.status}`);
-                }
-
-                displayResults(data);
-
+                const data = await callApi('/predict', { text, include_shap: true, include_lime: true });
+                showResult(data);
             } catch (error) {
-                console.error('Prediction error:', error);
-                document.getElementById('error-text').textContent = `Could not analyze text. Reason: ${error.message}`;
-                errorContainer.classList.remove('hidden');
-            } finally {
-                // --- UI State: Finished ---
-                analyzeBtn.disabled = false;
-                buttonText.textContent = 'Analyze News';
-                loadingSpinner.classList.add('hidden');
+                showError(error.message);
             }
-        }
+        });
 
-        function displayResults(data) {
-            const predictionLabel = document.getElementById('prediction-label');
-            const confidenceScore = document.getElementById('confidence-score');
-            const predictionBox = document.getElementById('prediction-box');
-            const resultContainer = document.getElementById('result-container');
-
-            const prediction = data.prediction;
-            // FIX: Ensure confidence is treated as a number before calling toFixed()
-            const confidence = parseFloat(data.confidence || 0).toFixed(2);
-            
-            predictionLabel.textContent = prediction;
-            confidenceScore.textContent = `${confidence}%`;
-
-            // Clear previous classes
-            predictionBox.className = 'result-box bg-gray-50';
-            predictionLabel.className = 'text-3xl font-bold';
-
-            // Apply new styling based on prediction
-            if (prediction === 'REAL NEWS') {
-                predictionBox.classList.add('real-border', 'bg-emerald-50');
-                predictionLabel.classList.add('real-text');
-                confidenceScore.classList.add('real-text');
-            } else if (prediction === 'FAKE NEWS') {
-                predictionBox.classList.add('fake-border', 'bg-red-50');
-                predictionLabel.classList.add('fake-text');
-                confidenceScore.classList.add('fake-text');
-            } else {
-                predictionBox.classList.add('unknown-border');
-                predictionLabel.classList.add('unknown-text');
-                confidenceScore.classList.add('unknown-text');
+        document.getElementById('url-btn').addEventListener('click', async () => {
+            const url = document.getElementById('url-input').value.trim();
+            if (!url) {
+                showError('Enter a URL before analysis.');
+                return;
             }
 
-            resultContainer.classList.remove('hidden');
-        }
+            try {
+                const data = await callApi('/analyze_url', { url, include_shap: true, include_lime: true });
+                urlPreview.textContent = `URL Preview:\n${data.article_preview || ''}`;
+                showResult(data);
+            } catch (error) {
+                showError(error.message);
+            }
+        });
+
+        document.getElementById('clear-text-btn').addEventListener('click', () => {
+            document.getElementById('text-input').value = '';
+            errorCard.classList.add('hidden');
+            resultCard.classList.add('hidden');
+            urlPreview.textContent = '';
+        });
     </script>
 </body>
 </html>

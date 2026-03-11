@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fake News Detector Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Space Grotesk', sans-serif;
+            background: linear-gradient(135deg, #f0f9ff 0%, #f8fafc 60%, #ecfeff 100%);
+        }
+    </style>
+</head>
+<body class="text-slate-800 min-h-screen">
+    <main class="max-w-6xl mx-auto px-4 py-10">
+        <header class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8">
+            <div>
+                <p class="text-xs uppercase tracking-wider text-cyan-700 font-bold">Analytics Dashboard</p>
+                <h1 class="text-4xl font-extrabold">Inference Insights</h1>
+            </div>
+            <a href="/" class="inline-flex items-center px-4 py-2 rounded-lg bg-slate-900 text-white font-semibold hover:bg-slate-800 transition">Back to Analyzer</a>
+        </header>
+
+        <section class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <article class="bg-white rounded-2xl p-5 shadow">
+                <p class="text-xs uppercase text-slate-500 tracking-wider">Analyzed Articles</p>
+                <p id="total-count" class="text-4xl font-extrabold mt-2">0</p>
+            </article>
+            <article class="bg-white rounded-2xl p-5 shadow">
+                <p class="text-xs uppercase text-slate-500 tracking-wider">Fake Predictions</p>
+                <p id="fake-count" class="text-4xl font-extrabold mt-2 text-red-700">0</p>
+            </article>
+            <article class="bg-white rounded-2xl p-5 shadow">
+                <p class="text-xs uppercase text-slate-500 tracking-wider">Real Predictions</p>
+                <p id="real-count" class="text-4xl font-extrabold mt-2 text-emerald-700">0</p>
+            </article>
+        </section>
+
+        <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <article class="bg-white rounded-2xl p-5 shadow">
+                <h2 class="font-bold mb-4">Fake vs Real Distribution</h2>
+                <canvas id="distribution-chart"></canvas>
+            </article>
+            <article class="bg-white rounded-2xl p-5 shadow">
+                <h2 class="font-bold mb-4">Confidence Distribution</h2>
+                <canvas id="confidence-chart"></canvas>
+            </article>
+        </section>
+
+        <section class="bg-white rounded-2xl p-5 shadow mt-6">
+            <h2 class="font-bold mb-4">Most Common Fake Keywords</h2>
+            <canvas id="keywords-chart"></canvas>
+        </section>
+    </main>
+
+    <script>
+        let distributionChart;
+        let confidenceChart;
+        let keywordChart;
+
+        function destroyIfExists(chart) {
+            if (chart) {
+                chart.destroy();
+            }
+        }
+
+        function renderDistribution(data) {
+            const ctx = document.getElementById('distribution-chart');
+            destroyIfExists(distributionChart);
+            distributionChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Fake News', 'Real News'],
+                    datasets: [{
+                        data: [
+                            data.prediction_distribution['FAKE NEWS'] || 0,
+                            data.prediction_distribution['REAL NEWS'] || 0
+                        ],
+                        backgroundColor: ['#ef4444', '#10b981']
+                    }]
+                }
+            });
+        }
+
+        function renderConfidence(data) {
+            const ctx = document.getElementById('confidence-chart');
+            destroyIfExists(confidenceChart);
+            confidenceChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: data.confidence_histogram.map(item => item.range),
+                    datasets: [{
+                        label: 'Count',
+                        data: data.confidence_histogram.map(item => item.count),
+                        backgroundColor: '#0ea5e9'
+                    }]
+                },
+                options: {
+                    scales: {
+                        y: { beginAtZero: true }
+                    }
+                }
+            });
+        }
+
+        function renderKeywords(data) {
+            const ctx = document.getElementById('keywords-chart');
+            destroyIfExists(keywordChart);
+            keywordChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: data.top_fake_keywords.map(item => item.word),
+                    datasets: [{
+                        label: 'Frequency',
+                        data: data.top_fake_keywords.map(item => item.count),
+                        backgroundColor: '#f97316'
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    scales: {
+                        x: { beginAtZero: true }
+                    }
+                }
+            });
+        }
+
+        async function loadAnalytics() {
+            const response = await fetch('/api/analytics');
+            const data = await response.json();
+
+            document.getElementById('total-count').textContent = data.total_analyzed || 0;
+            document.getElementById('fake-count').textContent = data.prediction_distribution['FAKE NEWS'] || 0;
+            document.getElementById('real-count').textContent = data.prediction_distribution['REAL NEWS'] || 0;
+
+            renderDistribution(data);
+            renderConfidence(data);
+            renderKeywords(data);
+        }
+
+        loadAnalytics().catch(() => {
+            document.getElementById('total-count').textContent = 'Error';
+        });
+    </script>
+</body>
+</html>

@@ -1,5 +1,14 @@
 Flask
-pandas
+gunicorn
+joblib
+lime
+matplotlib
+nltk
 numpy
+newspaper3k
+pandas
 scikit-learn
+seaborn
+shap
+pytest
 
