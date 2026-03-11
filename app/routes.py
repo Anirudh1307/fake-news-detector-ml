@@ -155,6 +155,8 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
                 include_lime=include_lime,
             )
             return jsonify(response)
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 503
         except FileNotFoundError as exc:
             return jsonify({"error": f"Model artifacts not found: {exc}"}), 500
         except ValueError as exc:
@@ -192,6 +194,8 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
                     **prediction,
                 }
             )
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 503
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         except Exception as exc:

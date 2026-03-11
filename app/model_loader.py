@@ -14,7 +14,7 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_TRAIN_SCRIPT = BASE_DIR / "training" / "train_models.py"
 
 
-def check_or_train_model(
+def ensure_model_exists(
     model_path: str | Path,
     vectorizer_path: str | Path,
     train_script_path: str | Path | None = None,
@@ -61,11 +61,27 @@ def check_or_train_model(
         return False
 
     if model_path.exists() and vectorizer_path.exists():
+        LOGGER.info("Model training complete.")
         LOGGER.info("Model successfully trained and saved.")
         return True
 
     LOGGER.error("Training finished but artifacts are still missing.")
     return False
+
+
+def check_or_train_model(
+    model_path: str | Path,
+    vectorizer_path: str | Path,
+    train_script_path: str | Path | None = None,
+    base_dir: str | Path | None = None,
+) -> bool:
+    """Backward-compatible alias."""
+    return ensure_model_exists(
+        model_path=model_path,
+        vectorizer_path=vectorizer_path,
+        train_script_path=train_script_path,
+        base_dir=base_dir,
+    )
 
 
 @dataclass
@@ -94,7 +110,7 @@ class ModelArtifacts:
                 return
 
             if not (self.model_path.exists() and self.vectorizer_path.exists()):
-                trained = check_or_train_model(self.model_path, self.vectorizer_path)
+                trained = ensure_model_exists(self.model_path, self.vectorizer_path)
                 if not trained:
                     LOGGER.error("Model artifacts are still unavailable after training attempt.")
                     return
