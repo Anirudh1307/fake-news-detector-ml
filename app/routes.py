@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -95,9 +96,10 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         template_folder=str(BASE_DIR / "templates"),
     )
     app.config.update(
-        MODEL_PATH=str(BASE_DIR / "models" / "best_model.joblib"),
-        VECTORIZER_PATH=str(BASE_DIR / "models" / "tfidf_vectorizer.joblib"),
-        ANALYTICS_LOG_PATH=str(BASE_DIR / "models" / "prediction_logs.jsonl"),
+        MODEL_PATH=os.getenv("MODEL_PATH", str(BASE_DIR / "models" / "best_model.joblib")),
+        VECTORIZER_PATH=os.getenv("VECTORIZER_PATH", str(BASE_DIR / "models" / "tfidf_vectorizer.joblib")),
+        # Render filesystem is ephemeral; this path is safe for runtime write operations.
+        ANALYTICS_LOG_PATH=os.getenv("ANALYTICS_LOG_PATH", "/tmp/prediction_logs.jsonl"),
     )
     if config:
         app.config.update(config)
