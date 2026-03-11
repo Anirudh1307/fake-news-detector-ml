@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import tempfile
 from typing import Any, Callable
 
 from flask import Flask, jsonify, render_template, request
@@ -58,6 +59,8 @@ def _predict_payload(
 ) -> dict:
     artifacts = _get_artifacts(app)
     artifacts.ensure_loaded()
+    if not artifacts.is_ready:
+        raise RuntimeError("Model is not ready yet. Training may still be running. Try again shortly.")
 
     result = run_prediction(
         raw_text=text,
@@ -99,7 +102,10 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         MODEL_PATH=os.getenv("MODEL_PATH", str(BASE_DIR / "models" / "best_model.joblib")),
         VECTORIZER_PATH=os.getenv("VECTORIZER_PATH", str(BASE_DIR / "models" / "tfidf_vectorizer.joblib")),
         # Render filesystem is ephemeral; this path is safe for runtime write operations.
-        ANALYTICS_LOG_PATH=os.getenv("ANALYTICS_LOG_PATH", "/tmp/prediction_logs.jsonl"),
+        ANALYTICS_LOG_PATH=os.getenv(
+            "ANALYTICS_LOG_PATH",
+            str(Path(tempfile.gettempdir()) / "prediction_logs.jsonl"),
+        ),
     )
     if config:
         app.config.update(config)
