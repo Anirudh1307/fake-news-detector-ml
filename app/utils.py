@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import re
 
 import numpy as np
 
@@ -12,6 +13,7 @@ from app.explainability import build_explanation_payload
 from app.preprocessing import preprocess_text
 
 LOGGER = logging.getLogger(__name__)
+WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
 def predict_proba_compat(model, vectorizer, preprocessed_text: str) -> tuple[int, float]:
@@ -48,9 +50,7 @@ def run_prediction(
         raise ValueError("Input text does not contain usable language tokens.")
 
     prediction, confidence = predict_proba_compat(model, vectorizer, preprocessed_text)
-    uncertainty_low = float(getattr(model, "_uncertainty_low", 0.45))
-    uncertainty_high = float(getattr(model, "_uncertainty_high", 0.55))
-    is_uncertain = uncertainty_low <= confidence <= uncertainty_high
+    is_uncertain = 0.45 < confidence < 0.55
     label = "UNCERTAIN" if is_uncertain else ("FAKE NEWS" if prediction == 0 else "REAL NEWS")
     prediction_id = -1 if is_uncertain else prediction
 
@@ -72,34 +72,61 @@ def run_prediction(
     }
 
 
+def _extract_article_with_requests(url: str) -> str:
+    import requests  # type: ignore
+    from bs4 import BeautifulSoup  # type: ignore
+
+    response = requests.get(
+        url,
+        timeout=12,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            )
+        },
+    )
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+
+    paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
+    text = WHITESPACE_PATTERN.sub(" ", " ".join(paragraphs)).strip()
+    if len(text.split()) < 50:
+        raise ValueError("Extracted content is too short.")
+    return text
+
+
 def fetch_article_text(url: str) -> str | dict[str, Any]:
+    article_cls = None
     try:
         from newspaper import Article  # type: ignore
+        article_cls = Article
     except ImportError as exc:
-        LOGGER.exception("Failed to import newspaper Article parser: %s", exc)
-        return {
-            "error": "URL analyzer unavailable. Required parser dependency is missing on the server.",
-            "status_code": 503,
-        }
+        LOGGER.warning("newspaper3k unavailable, falling back to requests+bs4 extraction: %s", exc)
+
+    if article_cls is not None:
+        try:
+            article = article_cls(url)
+            article.download()
+            article.parse()
+            text = (article.text or "").strip()
+            if len(text.split()) >= 50:
+                return text
+        except Exception:
+            LOGGER.exception("newspaper3k extraction failed. url=%s", url)
 
     try:
-        article = Article(url)
-        article.download()
-        article.parse()
+        return _extract_article_with_requests(url)
     except Exception:
-        LOGGER.exception("Failed to download or parse article. url=%s", url)
+        LOGGER.exception("requests+bs4 extraction failed. url=%s", url)
         return {
-            "error": "Unable to extract article text from this URL. Please verify the link and try again.",
+            "error": "Unable to extract article text from this URL. The site may block scraping or require JavaScript.",
             "status_code": 400,
         }
-
-    text = (article.text or "").strip()
-    if not text:
-        return {
-            "error": "Unable to extract article text from this URL. The page may block scraping.",
-            "status_code": 400,
-        }
-    return text
 
 
 def ensure_parent_dir(path: Path) -> None:

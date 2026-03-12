@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -11,7 +12,8 @@ import joblib
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
+from sklearn.linear_model import PassiveAggressiveClassifier
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, train_test_split
 from sklearn.svm import LinearSVC
 
 from training.dataset_loader import load_binary_dataset
@@ -41,6 +43,13 @@ def build_models(random_state: int) -> dict[str, object]:
         "Linear SVM": LinearSVC(
             random_state=random_state,
             class_weight="balanced",
+            max_iter=10000,
+        ),
+        "Passive Aggressive": PassiveAggressiveClassifier(
+            random_state=random_state,
+            max_iter=1000,
+            tol=1e-3,
+            class_weight="balanced",
         ),
     }
 
@@ -66,44 +75,80 @@ def main():
         dataset=args.dataset,
     )
     print(f"Loaded dataset with {len(dataset.frame)} rows")
-    print(f"Dataset class distribution (fake=1, real=0): {dataset.y.value_counts().to_dict()}")
-
-    # Keep inference compatibility: deployed app interprets class 0 as FAKE and 1 as REAL.
-    y_model = 1 - dataset.y
+    print(f"Dataset class distribution (fake=0, real=1): {dataset.y.value_counts().to_dict()}")
 
     X_train, X_test, y_train, y_test = train_test_split(
         dataset.X,
-        y_model,
+        dataset.y,
         test_size=args.test_size,
         random_state=args.random_state,
-        stratify=y_model,
+        stratify=dataset.y,
     )
 
     vectorizer = TfidfVectorizer(
         stop_words="english",
+        ngram_range=(1, 2),
         max_df=0.9,
         min_df=5,
         max_features=50000,
-        ngram_range=(1, 2),
+        sublinear_tf=True,
         dtype=np.float32,
     )
 
     X_train_vec = vectorizer.fit_transform(X_train)
     X_test_vec = vectorizer.transform(X_test)
     print(f"Vectorizer vocabulary size: {len(vectorizer.vocabulary_)}")
-    print("TF-IDF params: stop_words=english, ngram=(1,2), max_df=0.9, min_df=5, max_features=50000")
+    print(
+        "TF-IDF params: stop_words=english, ngram=(1,2), max_df=0.9, "
+        "min_df=5, max_features=50000, sublinear_tf=True"
+    )
 
     models = build_models(args.random_state)
-    for name, model in models.items():
-        print(f"Training {name}...")
-        model.fit(X_train_vec, y_train)
+    trained_models: dict[str, object] = {}
+    model_training_accuracy: dict[str, float] = {}
+    model_best_params: dict[str, dict[str, float | int | str]] = {}
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.random_state)
 
-    comparison_df, details = evaluate_models(models, X_test_vec, y_test)
+    for name, base_model in models.items():
+        print(f"Training {name}...")
+        if name == "Logistic Regression":
+            grid = GridSearchCV(
+                estimator=base_model,
+                param_grid={"C": [0.1, 1, 5, 10]},
+                scoring="f1",
+                cv=cv,
+                n_jobs=1,
+                refit=True,
+            )
+            grid.fit(X_train_vec, y_train)
+            model = grid.best_estimator_
+            model_best_params[name] = grid.best_params_
+        elif name == "Linear SVM":
+            grid = GridSearchCV(
+                estimator=base_model,
+                param_grid={"C": [0.5, 1, 2]},
+                scoring="f1",
+                cv=cv,
+                n_jobs=1,
+                refit=True,
+            )
+            grid.fit(X_train_vec, y_train)
+            model = grid.best_estimator_
+            model_best_params[name] = grid.best_params_
+        else:
+            model = base_model
+            model.fit(X_train_vec, y_train)
+            model_best_params[name] = {}
+
+        trained_models[name] = model
+        model_training_accuracy[name] = float(model.score(X_train_vec, y_train))
+
+    comparison_df, details = evaluate_models(trained_models, X_test_vec, y_test)
     print("\nModel comparison:")
     print(comparison_df.to_string(index=False))
 
     best_model_name = select_best_model(comparison_df)
-    best_model = models[best_model_name]
+    best_model = trained_models[best_model_name]
     print(f"\nBest model selected: {best_model_name}")
 
     save_evaluation_artifacts(comparison_df, details, y_test, reports_dir)
@@ -122,22 +167,26 @@ def main():
             "vectorizer_params": vectorizer.get_params(),
             "dataset_size": len(dataset.frame),
             "dataset_class_distribution": {str(k): int(v) for k, v in dataset.y.value_counts().to_dict().items()},
-            "model_class_distribution": {str(k): int(v) for k, v in y_model.value_counts().to_dict().items()},
             "split_sizes": {
                 "train": int(len(X_train)),
                 "test": int(len(X_test)),
             },
             "dataset": args.dataset,
-            "dataset_label_mapping": {"fake": 1, "real": 0},
-            "model_label_mapping": {"fake": 0, "real": 1},
+            "dataset_label_mapping": {"fake": 0, "real": 1},
             "preprocessing": {
                 "min_tokens": int(args.min_tokens),
                 "deduplicate": True,
                 "lowercase": True,
                 "remove_urls": True,
+                "remove_numbers": True,
                 "remove_punctuation": True,
                 "normalize_whitespace": True,
             },
+            "model_type": best_model_name,
+            "dataset_used": args.dataset,
+            "training_accuracy": model_training_accuracy[best_model_name],
+            "training_date": datetime.now(timezone.utc).isoformat(),
+            "best_params": model_best_params.get(best_model_name, {}),
         },
         metadata_path,
     )

@@ -2,14 +2,28 @@ from __future__ import annotations
 
 import re
 import string
+import unicodedata
 from typing import Iterable, Sequence
 
 from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 
 URL_PATTERN = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 WHITESPACE_PATTERN = re.compile(r"\s+")
+NUMBER_PATTERN = re.compile(r"\d+")
+NON_ALPHA_PATTERN = re.compile(r"[^a-z\s]")
 PUNCT_TRANSLATION = str.maketrans("", "", string.punctuation)
-DEFAULT_STOPWORDS = set(ENGLISH_STOP_WORDS)
+EXTRA_STOPWORDS = {
+    "said",
+    "say",
+    "says",
+    "reuters",
+    "ap",
+    "news",
+    "report",
+    "reports",
+    "breaking",
+}
+DEFAULT_STOPWORDS = set(ENGLISH_STOP_WORDS).union(EXTRA_STOPWORDS)
 
 _lemmatizer = None
 _nltk_wordnet_available = False
@@ -60,22 +74,27 @@ def preprocess_text(
     remove_stopwords: bool = True,
     apply_lemmatization: bool = True,
     stopwords: set[str] | None = None,
+    extra_stopwords: set[str] | None = None,
 ) -> str:
     """Advanced NLP preprocessing for classification."""
     if not isinstance(text, str):
         return ""
 
-    processed = text.lower()
+    processed = unicodedata.normalize("NFKC", text)
+    processed = processed.lower()
     processed = URL_PATTERN.sub(" ", processed)
     processed = processed.translate(PUNCT_TRANSLATION)
-    processed = re.sub(r"[^a-z\s]", " ", processed)
+    processed = NUMBER_PATTERN.sub(" ", processed)
+    processed = NON_ALPHA_PATTERN.sub(" ", processed)
     processed = WHITESPACE_PATTERN.sub(" ", processed).strip()
 
     if not processed:
         return ""
 
     tokens = processed.split()
-    stopword_set = DEFAULT_STOPWORDS if stopwords is None else stopwords
+    stopword_set = set(DEFAULT_STOPWORDS if stopwords is None else stopwords)
+    if extra_stopwords:
+        stopword_set.update(extra_stopwords)
 
     if remove_stopwords:
         tokens = [token for token in tokens if token not in stopword_set]
@@ -116,4 +135,3 @@ def deduplicate_dataframe(df, text_column: str):
     if text_column not in df.columns:
         raise ValueError(f"Missing text column '{text_column}'")
     return df.drop_duplicates(subset=[text_column]).reset_index(drop=True)
-
