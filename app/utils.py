@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from html import unescape
 from pathlib import Path
 from typing import Any
 import re
@@ -15,6 +16,7 @@ from app.preprocessing import preprocess_text
 
 LOGGER = logging.getLogger(__name__)
 WHITESPACE_PATTERN = re.compile(r"\s+")
+HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
 TRUSTED_SOURCE_HOSTS = (
     "bbc.com",
     "reuters.com",
@@ -28,6 +30,8 @@ MISINFORMATION_KEYWORDS = (
     "government conspiracy",
     "they don't want you to know",
 )
+MIN_ARTICLE_CHARS = 200
+MIN_ARTICLE_TOKENS = 30
 
 
 def _ml_probability_real(model, vectorizer, preprocessed_text: str) -> float:
@@ -110,9 +114,26 @@ def run_prediction(
     }
 
 
-def _extract_article_with_requests(url: str) -> str:
+def _clean_extracted_text(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    cleaned = unescape(text).replace("\xa0", " ")
+    cleaned = HTML_TAG_PATTERN.sub(" ", cleaned)
+    cleaned = WHITESPACE_PATTERN.sub(" ", cleaned).strip()
+    return cleaned
+
+
+def _is_sufficient_article_text(text: str) -> bool:
+    cleaned = _clean_extracted_text(text)
+    if len(cleaned) < MIN_ARTICLE_CHARS:
+        return False
+    if len(cleaned.split()) < MIN_ARTICLE_TOKENS:
+        return False
+    return True
+
+
+def _download_html(url: str) -> str:
     import requests  # type: ignore
-    from bs4 import BeautifulSoup  # type: ignore
 
     response = requests.get(
         url,
@@ -126,45 +147,81 @@ def _extract_article_with_requests(url: str) -> str:
         },
     )
     response.raise_for_status()
+    return response.text
 
-    soup = BeautifulSoup(response.text, "html.parser")
+
+def _extract_with_newspaper(url: str) -> str:
+    from newspaper import Article  # type: ignore
+
+    article = Article(url)
+    article.download()
+    article.parse()
+    return _clean_extracted_text(article.text or "")
+
+
+def _extract_with_trafilatura(url: str) -> str:
+    import trafilatura  # type: ignore
+
+    downloaded = trafilatura.fetch_url(url)
+    if not downloaded:
+        return ""
+    extracted = trafilatura.extract(downloaded, include_comments=False, include_tables=False)
+    return _clean_extracted_text(extracted or "")
+
+
+def _extract_with_readability(url: str) -> str:
+    from readability import Document  # type: ignore
+    from bs4 import BeautifulSoup  # type: ignore
+
+    html = _download_html(url)
+    doc = Document(html)
+    summary_html = doc.summary(html_partial=True)
+    soup = BeautifulSoup(summary_html, "html.parser")
+    text = soup.get_text(" ", strip=True)
+    return _clean_extracted_text(text)
+
+
+def _extract_with_bs4(url: str) -> str:
+    from bs4 import BeautifulSoup  # type: ignore
+
+    html = _download_html(url)
+    soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
 
     paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
-    text = WHITESPACE_PATTERN.sub(" ", " ".join(paragraphs)).strip()
-    if len(text.split()) < 50:
-        raise ValueError("Extracted content is too short.")
-    return text
+    text = " ".join(paragraphs)
+    return _clean_extracted_text(text)
 
 
 def fetch_article_text(url: str) -> str | dict[str, Any]:
-    article_cls = None
-    try:
-        from newspaper import Article  # type: ignore
-        article_cls = Article
-    except ImportError as exc:
-        LOGGER.warning("newspaper3k unavailable, falling back to requests+bs4 extraction: %s", exc)
+    extraction_stages = [
+        ("newspaper3k", _extract_with_newspaper),
+        ("trafilatura", _extract_with_trafilatura),
+        ("readability", _extract_with_readability),
+        ("bs4", _extract_with_bs4),
+    ]
 
-    if article_cls is not None:
+    for stage_name, extractor in extraction_stages:
         try:
-            article = article_cls(url)
-            article.download()
-            article.parse()
-            text = (article.text or "").strip()
-            if len(text.split()) >= 50:
-                return text
+            extracted = extractor(url)
+            if _is_sufficient_article_text(extracted):
+                LOGGER.info("extractor=%s url=%s", stage_name, url)
+                return _clean_extracted_text(extracted)
+            LOGGER.warning(
+                "extractor=%s insufficient_text url=%s chars=%s tokens=%s",
+                stage_name,
+                url,
+                len(extracted),
+                len(extracted.split()),
+            )
         except Exception:
-            LOGGER.exception("newspaper3k extraction failed. url=%s", url)
+            LOGGER.exception("extractor=%s failed url=%s", stage_name, url)
 
-    try:
-        return _extract_article_with_requests(url)
-    except Exception:
-        LOGGER.exception("requests+bs4 extraction failed. url=%s", url)
-        return {
-            "error": "Unable to extract article text from this URL. The site may block scraping or require JavaScript.",
-            "status_code": 400,
-        }
+    return {
+        "error": "Unable to extract article text from this URL. The site may block scraping or require JavaScript.",
+        "status_code": 400,
+    }
 
 
 def ensure_parent_dir(path: Path) -> None:

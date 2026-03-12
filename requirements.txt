@@ -8,6 +8,8 @@ matplotlib
 nltk
 numpy
 newspaper3k
+trafilatura
+readability-lxml
 beautifulsoup4
 pandas
 requests
