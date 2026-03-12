@@ -10,12 +10,15 @@ if __package__ is None or __package__ == "":
 
 import joblib
 import numpy as np
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.linear_model import PassiveAggressiveClassifier
+from sklearn.metrics import accuracy_score
 from sklearn.model_selection import GridSearchCV, StratifiedKFold, train_test_split
 from sklearn.svm import LinearSVC
 
+from app.model_wrappers import CalibratedHybridModel
 from training.dataset_loader import load_binary_dataset
 from training.evaluate_models import evaluate_models, save_evaluation_artifacts
 
@@ -90,7 +93,7 @@ def main():
         ngram_range=(1, 2),
         max_df=0.9,
         min_df=5,
-        max_features=50000,
+        max_features=40000,
         sublinear_tf=True,
         dtype=np.float32,
     )
@@ -100,21 +103,21 @@ def main():
     print(f"Vectorizer vocabulary size: {len(vectorizer.vocabulary_)}")
     print(
         "TF-IDF params: stop_words=english, ngram=(1,2), max_df=0.9, "
-        "min_df=5, max_features=50000, sublinear_tf=True"
+        "min_df=5, max_features=40000, sublinear_tf=True"
     )
 
     models = build_models(args.random_state)
     trained_models: dict[str, object] = {}
     model_training_accuracy: dict[str, float] = {}
     model_best_params: dict[str, dict[str, float | int | str]] = {}
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.random_state)
+    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=args.random_state)
 
     for name, base_model in models.items():
         print(f"Training {name}...")
         if name == "Logistic Regression":
             grid = GridSearchCV(
                 estimator=base_model,
-                param_grid={"C": [0.1, 1, 5, 10]},
+                param_grid={"C": [0.1, 1, 5, 10], "penalty": ["l1", "l2"]},
                 scoring="f1",
                 cv=cv,
                 n_jobs=1,
@@ -126,7 +129,19 @@ def main():
         elif name == "Linear SVM":
             grid = GridSearchCV(
                 estimator=base_model,
-                param_grid={"C": [0.5, 1, 2]},
+                param_grid={"C": [0.5, 1, 2], "loss": ["hinge", "squared_hinge"]},
+                scoring="f1",
+                cv=cv,
+                n_jobs=1,
+                refit=True,
+            )
+            grid.fit(X_train_vec, y_train)
+            model = grid.best_estimator_
+            model_best_params[name] = grid.best_params_
+        elif name == "Passive Aggressive":
+            grid = GridSearchCV(
+                estimator=base_model,
+                param_grid={"C": [0.1, 0.5, 1.0], "loss": ["hinge", "squared_hinge"]},
                 scoring="f1",
                 cv=cv,
                 n_jobs=1,
@@ -150,6 +165,17 @@ def main():
     best_model_name = select_best_model(comparison_df)
     best_model = trained_models[best_model_name]
     print(f"\nBest model selected: {best_model_name}")
+    print("Calibrating best model probabilities with CalibratedClassifierCV...")
+    calibrator = CalibratedClassifierCV(
+        estimator=best_model,
+        method="sigmoid",
+        cv=3,
+    )
+    calibrator.fit(X_train_vec, y_train)
+    serving_model = CalibratedHybridModel(base_model=best_model, calibrator=calibrator)
+    model_training_accuracy[best_model_name] = float(
+        accuracy_score(y_train, serving_model.predict(X_train_vec))
+    )
 
     save_evaluation_artifacts(comparison_df, details, y_test, reports_dir)
     print(f"Saved evaluation artifacts to: {reports_dir}")
@@ -158,7 +184,7 @@ def main():
     vectorizer_path = models_dir / "tfidf_vectorizer.joblib"
     metadata_path = models_dir / "metadata.joblib"
 
-    joblib.dump(best_model, best_model_path)
+    joblib.dump(serving_model, best_model_path)
     joblib.dump(vectorizer, vectorizer_path)
     joblib.dump(
         {
@@ -187,6 +213,11 @@ def main():
             "training_accuracy": model_training_accuracy[best_model_name],
             "training_date": datetime.now(timezone.utc).isoformat(),
             "best_params": model_best_params.get(best_model_name, {}),
+            "probability_calibration": {
+                "enabled": True,
+                "method": "sigmoid",
+                "cv": 3,
+            },
         },
         metadata_path,
     )

@@ -99,6 +99,7 @@ def _predict_payload(
         vectorizer=artifacts.vectorizer,
         include_shap=include_shap,
         include_lime=include_lime,
+        source_url=source_url,
     )
 
     response = {

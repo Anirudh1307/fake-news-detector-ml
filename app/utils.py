@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 import re
+from urllib.parse import urlparse
 
 import numpy as np
 
@@ -14,28 +15,51 @@ from app.preprocessing import preprocess_text
 
 LOGGER = logging.getLogger(__name__)
 WHITESPACE_PATTERN = re.compile(r"\s+")
+TRUSTED_SOURCE_HOSTS = (
+    "bbc.com",
+    "reuters.com",
+    "apnews.com",
+    "nytimes.com",
+    "theguardian.com",
+)
+MISINFORMATION_KEYWORDS = (
+    "secret cure",
+    "shocking truth",
+    "government conspiracy",
+    "they don't want you to know",
+)
 
 
-def predict_proba_compat(model, vectorizer, preprocessed_text: str) -> tuple[int, float]:
+def _ml_probability_real(model, vectorizer, preprocessed_text: str) -> float:
     X = vectorizer.transform([preprocessed_text])
-    threshold = float(getattr(model, "_decision_threshold", 0.5))
 
     if hasattr(model, "predict_proba"):
         probs = model.predict_proba(X)[0]
-        prob_real = float(probs[1])
-        prediction = int(prob_real >= threshold)
-        confidence = prob_real if prediction == 1 else 1.0 - prob_real
-        return prediction, confidence
+        return float(probs[1])
 
     if hasattr(model, "decision_function"):
         decision = float(np.ravel(model.decision_function(X))[0])
-        prob_real = float(1.0 / (1.0 + np.exp(-decision)))
-        prediction = int(prob_real >= threshold)
-        confidence = prob_real if prediction == 1 else 1.0 - prob_real
-        return prediction, confidence
+        return float(1.0 / (1.0 + np.exp(-decision)))
 
     prediction = int(model.predict(X)[0])
-    return prediction, 0.5
+    return 1.0 if prediction == 1 else 0.0
+
+
+def _source_credibility(source_url: str | None) -> float:
+    if not source_url:
+        return 0.5
+    try:
+        host = (urlparse(source_url).hostname or "").lower()
+    except Exception:
+        return 0.5
+    return 1.0 if any(domain in host for domain in TRUSTED_SOURCE_HOSTS) else 0.5
+
+
+def _keyword_credibility(raw_text: str) -> tuple[float, list[str]]:
+    text = raw_text.lower()
+    matched = [keyword for keyword in MISINFORMATION_KEYWORDS if keyword in text]
+    score = max(0.0, 1.0 - (0.2 * len(matched)))
+    return float(score), matched
 
 
 def run_prediction(
@@ -44,13 +68,20 @@ def run_prediction(
     vectorizer,
     include_shap: bool = True,
     include_lime: bool = True,
+    source_url: str | None = None,
 ) -> dict[str, Any]:
     preprocessed_text = preprocess_text(raw_text)
     if not preprocessed_text:
         raise ValueError("Input text does not contain usable language tokens.")
 
-    prediction, confidence = predict_proba_compat(model, vectorizer, preprocessed_text)
-    is_uncertain = 0.45 < confidence < 0.55
+    ml_real_score = _ml_probability_real(model, vectorizer, preprocessed_text)
+    source_score = _source_credibility(source_url)
+    keyword_score, matched_keywords = _keyword_credibility(raw_text)
+    final_real_score = float(np.clip((0.8 * ml_real_score) + (0.1 * source_score) + (0.1 * keyword_score), 0.0, 1.0))
+
+    prediction = int(final_real_score >= 0.5)
+    confidence = final_real_score if prediction == 1 else 1.0 - final_real_score
+    is_uncertain = 0.48 < confidence < 0.52
     label = "UNCERTAIN" if is_uncertain else ("FAKE NEWS" if prediction == 0 else "REAL NEWS")
     prediction_id = -1 if is_uncertain else prediction
 
@@ -62,6 +93,13 @@ def run_prediction(
         include_shap=include_shap,
         include_lime=include_lime,
     )
+    explanation["hybrid_signals"] = {
+        "ml_real_score": round(ml_real_score, 4),
+        "source_credibility": round(source_score, 4),
+        "keyword_credibility": round(keyword_score, 4),
+        "final_real_score": round(final_real_score, 4),
+        "matched_misinformation_keywords": matched_keywords,
+    }
 
     return {
         "prediction": label,
