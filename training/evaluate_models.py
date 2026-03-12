@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import matplotlib
 import numpy as np
@@ -41,13 +42,17 @@ def compute_classification_metrics(y_true, y_pred) -> dict:
     }
 
 
-def evaluate_models(models: dict, X_test_vec, y_test) -> tuple[pd.DataFrame, dict]:
+def evaluate_models(
+    models: dict[str, Any],
+    X_test_vec,
+    y_test,
+) -> tuple[pd.DataFrame, dict]:
     rows = []
     details = {}
 
     for name, model in models.items():
-        y_pred = model.predict(X_test_vec)
         y_prob = _positive_probability(model, X_test_vec)
+        y_pred = model.predict(X_test_vec)
 
         metrics = compute_classification_metrics(y_test, y_pred)
         if y_prob is not None:

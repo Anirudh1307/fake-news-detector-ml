@@ -16,19 +16,23 @@ LOGGER = logging.getLogger(__name__)
 
 def predict_proba_compat(model, vectorizer, preprocessed_text: str) -> tuple[int, float]:
     X = vectorizer.transform([preprocessed_text])
-    prediction = int(model.predict(X)[0])
+    threshold = float(getattr(model, "_decision_threshold", 0.5))
 
     if hasattr(model, "predict_proba"):
         probs = model.predict_proba(X)[0]
-        return prediction, float(probs[prediction])
+        prob_real = float(probs[1])
+        prediction = int(prob_real >= threshold)
+        confidence = prob_real if prediction == 1 else 1.0 - prob_real
+        return prediction, confidence
 
     if hasattr(model, "decision_function"):
         decision = float(np.ravel(model.decision_function(X))[0])
         prob_real = float(1.0 / (1.0 + np.exp(-decision)))
-        prob_fake = 1.0 - prob_real
-        probs = [prob_fake, prob_real]
-        return prediction, probs[prediction]
+        prediction = int(prob_real >= threshold)
+        confidence = prob_real if prediction == 1 else 1.0 - prob_real
+        return prediction, confidence
 
+    prediction = int(model.predict(X)[0])
     return prediction, 0.5
 
 
@@ -44,7 +48,11 @@ def run_prediction(
         raise ValueError("Input text does not contain usable language tokens.")
 
     prediction, confidence = predict_proba_compat(model, vectorizer, preprocessed_text)
-    label = "FAKE NEWS" if prediction == 0 else "REAL NEWS"
+    uncertainty_low = float(getattr(model, "_uncertainty_low", 0.45))
+    uncertainty_high = float(getattr(model, "_uncertainty_high", 0.55))
+    is_uncertain = uncertainty_low <= confidence <= uncertainty_high
+    label = "UNCERTAIN" if is_uncertain else ("FAKE NEWS" if prediction == 0 else "REAL NEWS")
+    prediction_id = -1 if is_uncertain else prediction
 
     explanation = build_explanation_payload(
         raw_text=raw_text,
@@ -57,7 +65,7 @@ def run_prediction(
 
     return {
         "prediction": label,
-        "prediction_id": prediction,
+        "prediction_id": prediction_id,
         "confidence": round(confidence * 100, 2),
         "preprocessed_text": preprocessed_text,
         "explanation": explanation,

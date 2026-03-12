@@ -20,9 +20,8 @@ TSV_COLUMNS = [
     'context',
 ]
 
-FAKE_LABELS = {'false', 'barely-true', 'pants-fire'}
+FAKE_LABELS = {'false', 'pants-fire'}
 REAL_LABELS = {'true', 'mostly-true'}
-HALF_TRUE_LABEL = 'half-true'
 
 
 def parse_args():
@@ -36,9 +35,9 @@ def parse_args():
     )
     parser.add_argument(
         '--half-true',
-        choices=['drop', 'fake', 'real'],
+        choices=['drop'],
         default='drop',
-        help='How to map half-true labels (default: drop).',
+        help='Half-true handling strategy (fixed to drop).',
     )
     parser.add_argument(
         '--fake-out',
@@ -65,14 +64,10 @@ def load_liar_splits(data_dir):
 
 
 def map_binary_labels(df, half_true_mode):
+    del half_true_mode
     labels = df['label'].astype(str).str.strip().str.lower()
     fake_labels = set(FAKE_LABELS)
     real_labels = set(REAL_LABELS)
-
-    if half_true_mode == 'fake':
-        fake_labels.add(HALF_TRUE_LABEL)
-    elif half_true_mode == 'real':
-        real_labels.add(HALF_TRUE_LABEL)
 
     usable = labels.isin(fake_labels.union(real_labels))
     mapped = df[usable].copy()
@@ -100,6 +95,7 @@ def main():
     df = load_liar_splits(args.data_dir)
     mapped = map_binary_labels(df, args.half_true)
     fake_df, true_df = build_output_frames(mapped)
+    excluded_rows = len(df) - len(mapped)
 
     Path(args.fake_out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.true_out).parent.mkdir(parents=True, exist_ok=True)
@@ -109,7 +105,9 @@ def main():
     original_label_counts = df['label'].value_counts().to_dict()
     print(f"Loaded rows: {len(df)}")
     print(f"Original label counts: {original_label_counts}")
+    print("Binary mapping: fake={false,pants-fire}, real={true,mostly-true}, dropped={half-true,barely-true}")
     print(f"half-true mode: {args.half_true}")
+    print(f"Excluded rows after label mapping: {excluded_rows}")
     print(f"Saved fake rows: {len(fake_df)} -> {args.fake_out}")
     print(f"Saved real rows: {len(true_df)} -> {args.true_out}")
 

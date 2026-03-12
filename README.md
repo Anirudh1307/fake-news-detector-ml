@@ -250,13 +250,15 @@ pytest -q
 
 ### Step A: Prepare data
 
-If using LIAR TSV files:
+Use the ISOT dataset files:
 
 ```bash
-python prepare_liar_data.py
+# place files at:
+# data/Fake.csv
+# data/True.csv
 ```
 
-This creates `data/Fake.csv` and `data/True.csv`.
+Expected columns include `title`, `text` (optional: `subject`, `date`).
 
 ### Step B: Install dependencies
 
@@ -267,7 +269,7 @@ pip install -r requirements.txt
 ### Step C: Train + compare models
 
 ```bash
-python training/train_models.py
+python training/train_models.py --dataset isot --fake-path data/Fake.csv --true-path data/True.csv
 ```
 
 ### Step D: Start Flask app
@@ -326,7 +328,7 @@ docker run -p 5000:5000 fake-news-detector
 
 ## Notes
 
-- LIAR is statement-level data; this predicts linguistic credibility style, not definitive fact verification.
+- ISOT is article-level data and better matches URL/news-article inference use cases.
 - Keep `models/best_model.joblib` and `models/tfidf_vectorizer.joblib` available in deployment environment.
 - SHAP/LIME can add latency for online inference; disable via request flags if needed.
 
