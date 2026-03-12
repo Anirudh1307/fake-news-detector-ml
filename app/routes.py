@@ -194,7 +194,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             return jsonify({"error": f"Input text too long. Max {app.config['MAX_INPUT_CHARS']} characters."}), 400
 
         preprocessed_text, token_count = preprocess_and_count_tokens(text)
-        if token_count < 25:
+        if token_count < 15:
             return jsonify(
                 {
                     "prediction": "INSUFFICIENT_CONTEXT",
