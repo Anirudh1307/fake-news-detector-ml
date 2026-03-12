@@ -67,8 +67,12 @@ def run_prediction(
 def fetch_article_text(url: str) -> str | dict[str, Any]:
     try:
         from newspaper import Article  # type: ignore
-    except ImportError:
-        return {"error": "URL analyzer unavailable. newspaper3k dependency missing.", "status_code": 503}
+    except ImportError as exc:
+        LOGGER.exception("Failed to import newspaper Article parser: %s", exc)
+        return {
+            "error": "URL analyzer unavailable. Required parser dependency is missing on the server.",
+            "status_code": 503,
+        }
 
     try:
         article = Article(url)
