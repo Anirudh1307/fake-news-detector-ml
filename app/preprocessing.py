@@ -11,6 +11,7 @@ URL_PATTERN = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 WHITESPACE_PATTERN = re.compile(r"\s+")
 NUMBER_PATTERN = re.compile(r"\d+")
 NON_ALPHA_PATTERN = re.compile(r"[^a-z\s]")
+STRAY_SYMBOL_PATTERN = re.compile(r"[_~`|]+")
 PUNCT_TRANSLATION = str.maketrans("", "", string.punctuation)
 EXTRA_STOPWORDS = {
     "said",
@@ -86,6 +87,7 @@ def preprocess_text(
     processed = processed.translate(PUNCT_TRANSLATION)
     processed = NUMBER_PATTERN.sub(" ", processed)
     processed = NON_ALPHA_PATTERN.sub(" ", processed)
+    processed = STRAY_SYMBOL_PATTERN.sub(" ", processed)
     processed = WHITESPACE_PATTERN.sub(" ", processed).strip()
 
     if not processed:
@@ -118,6 +120,19 @@ def preprocess_corpus(
         )
         for text in texts
     ]
+
+
+def preprocess_and_count_tokens(
+    text: str,
+    remove_stopwords: bool = True,
+    apply_lemmatization: bool = True,
+) -> tuple[str, int]:
+    processed = preprocess_text(
+        text,
+        remove_stopwords=remove_stopwords,
+        apply_lemmatization=apply_lemmatization,
+    )
+    return processed, len(processed.split()) if processed else 0
 
 
 def deduplicate_texts(texts: Sequence[str]) -> list[str]:

@@ -13,6 +13,7 @@ from app.model_loader import (
     ModelArtifacts,
     create_artifact_loader,
 )
+from app.preprocessing import preprocess_and_count_tokens
 from app.utils import append_jsonl, fetch_article_text, read_jsonl, run_prediction
 from dashboard.analytics import build_analytics_summary
 
@@ -87,6 +88,7 @@ def _predict_payload(
     text: str,
     source: str,
     source_url: str | None = None,
+    preprocessed_text: str | None = None,
     include_shap: bool = False,
     include_lime: bool = False,
 ) -> dict:
@@ -95,6 +97,7 @@ def _predict_payload(
 
     result = run_prediction(
         raw_text=text,
+        preprocessed_text=preprocessed_text,
         model=artifacts.model,
         vectorizer=artifacts.vectorizer,
         include_shap=include_shap,
@@ -190,11 +193,22 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         if len(text) > app.config["MAX_INPUT_CHARS"]:
             return jsonify({"error": f"Input text too long. Max {app.config['MAX_INPUT_CHARS']} characters."}), 400
 
+        preprocessed_text, token_count = preprocess_and_count_tokens(text)
+        if token_count < 25:
+            return jsonify(
+                {
+                    "prediction": "INSUFFICIENT_CONTEXT",
+                    "confidence": 0,
+                    "message": "Input text is too short for reliable classification.",
+                }
+            )
+
         try:
             response = _predict_payload(
                 app,
                 text=text,
                 source="text",
+                preprocessed_text=preprocessed_text,
                 include_shap=include_shap,
                 include_lime=include_lime,
             )

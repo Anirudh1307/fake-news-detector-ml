@@ -24,14 +24,25 @@ TRUSTED_SOURCE_HOSTS = (
     "nytimes.com",
     "theguardian.com",
 )
-MISINFORMATION_KEYWORDS = (
-    "secret cure",
-    "shocking truth",
-    "government conspiracy",
-    "they don't want you to know",
+MISINFORMATION_PATTERNS = (
+    ("secret cure", re.compile(r"\bsecret\W+cure\b", re.IGNORECASE)),
+    ("miracle cure", re.compile(r"\bmiracle\W+cure\b", re.IGNORECASE)),
+    ("government conspiracy", re.compile(r"\bgovernment\W+conspiracy\b", re.IGNORECASE)),
+    ("shocking truth", re.compile(r"\bshocking\W+truth\b", re.IGNORECASE)),
+    (
+        "they don't want you to know",
+        re.compile(r"\bthey\W+don\W*t\W+want\W+you\W+to\W+know\b", re.IGNORECASE),
+    ),
+    ("hidden technology", re.compile(r"\bhidden\W+technology\b", re.IGNORECASE)),
+    ("leaked documents reveal", re.compile(r"\bleaked\W+documents\W+reveal\b", re.IGNORECASE)),
 )
 MIN_ARTICLE_CHARS = 200
 MIN_ARTICLE_TOKENS = 30
+TRUSTED_SOURCE_REAL_BOOST = 0.05
+KEYWORD_FAKE_BOOST_PER_MATCH = 0.03
+MAX_KEYWORD_FAKE_BOOST = 0.15
+UNCERTAIN_LOWER = 0.45
+UNCERTAIN_UPPER = 0.55
 
 
 def _ml_probability_real(model, vectorizer, preprocessed_text: str) -> float:
@@ -49,21 +60,26 @@ def _ml_probability_real(model, vectorizer, preprocessed_text: str) -> float:
     return 1.0 if prediction == 1 else 0.0
 
 
-def _source_credibility(source_url: str | None) -> float:
+def _parse_source_host(source_url: str | None) -> str:
     if not source_url:
-        return 0.5
+        return ""
     try:
-        host = (urlparse(source_url).hostname or "").lower()
+        return (urlparse(source_url).hostname or "").lower()
     except Exception:
-        return 0.5
-    return 1.0 if any(domain in host for domain in TRUSTED_SOURCE_HOSTS) else 0.5
+        return ""
 
 
-def _keyword_credibility(raw_text: str) -> tuple[float, list[str]]:
-    text = raw_text.lower()
-    matched = [keyword for keyword in MISINFORMATION_KEYWORDS if keyword in text]
-    score = max(0.0, 1.0 - (0.2 * len(matched)))
-    return float(score), matched
+def _trusted_source_boost(source_url: str | None) -> tuple[float, bool, str]:
+    host = _parse_source_host(source_url)
+    is_trusted = any(domain in host for domain in TRUSTED_SOURCE_HOSTS) if host else False
+    return (TRUSTED_SOURCE_REAL_BOOST if is_trusted else 0.0), is_trusted, host
+
+
+def _misinformation_fake_boost(raw_text: str) -> tuple[float, list[str]]:
+    text = raw_text or ""
+    matched = [label for label, pattern in MISINFORMATION_PATTERNS if pattern.search(text)]
+    boost = min(MAX_KEYWORD_FAKE_BOOST, KEYWORD_FAKE_BOOST_PER_MATCH * len(matched))
+    return float(boost), matched
 
 
 def run_prediction(
@@ -73,19 +89,22 @@ def run_prediction(
     include_shap: bool = True,
     include_lime: bool = True,
     source_url: str | None = None,
+    preprocessed_text: str | None = None,
 ) -> dict[str, Any]:
-    preprocessed_text = preprocess_text(raw_text)
+    preprocessed_text = preprocessed_text if preprocessed_text is not None else preprocess_text(raw_text)
     if not preprocessed_text:
         raise ValueError("Input text does not contain usable language tokens.")
 
     ml_real_score = _ml_probability_real(model, vectorizer, preprocessed_text)
-    source_score = _source_credibility(source_url)
-    keyword_score, matched_keywords = _keyword_credibility(raw_text)
-    final_real_score = float(np.clip((0.8 * ml_real_score) + (0.1 * source_score) + (0.1 * keyword_score), 0.0, 1.0))
+    source_real_boost, trusted_source, source_host = _trusted_source_boost(source_url)
+    keyword_fake_boost, matched_keywords = _misinformation_fake_boost(raw_text)
 
-    prediction = int(final_real_score >= 0.5)
-    confidence = final_real_score if prediction == 1 else 1.0 - final_real_score
-    is_uncertain = 0.48 < confidence < 0.52
+    final_real_score = float(np.clip(ml_real_score + source_real_boost - keyword_fake_boost, 0.0, 1.0))
+    calibrated_probability = round(final_real_score, 2)
+
+    prediction = int(calibrated_probability >= 0.5)
+    confidence = calibrated_probability if prediction == 1 else 1.0 - calibrated_probability
+    is_uncertain = UNCERTAIN_LOWER < calibrated_probability < UNCERTAIN_UPPER
     label = "UNCERTAIN" if is_uncertain else ("FAKE NEWS" if prediction == 0 else "REAL NEWS")
     prediction_id = -1 if is_uncertain else prediction
 
@@ -99,9 +118,12 @@ def run_prediction(
     )
     explanation["hybrid_signals"] = {
         "ml_real_score": round(ml_real_score, 4),
-        "source_credibility": round(source_score, 4),
-        "keyword_credibility": round(keyword_score, 4),
+        "source_host": source_host,
+        "trusted_source_boost": round(source_real_boost, 4),
+        "trusted_source_match": trusted_source,
+        "keyword_fake_boost": round(keyword_fake_boost, 4),
         "final_real_score": round(final_real_score, 4),
+        "calibrated_probability": calibrated_probability,
         "matched_misinformation_keywords": matched_keywords,
     }
 
@@ -196,8 +218,8 @@ def _extract_with_bs4(url: str) -> str:
 
 def fetch_article_text(url: str) -> str | dict[str, Any]:
     extraction_stages = [
-        ("newspaper3k", _extract_with_newspaper),
         ("trafilatura", _extract_with_trafilatura),
+        ("newspaper3k", _extract_with_newspaper),
         ("readability", _extract_with_readability),
         ("bs4", _extract_with_bs4),
     ]
