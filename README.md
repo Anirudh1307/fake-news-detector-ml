@@ -306,6 +306,7 @@ docker run -p 5000:5000 fake-news-detector
    - `models/tfidf_vectorizer.joblib`
 4. Build command:
    - `pip install --no-cache-dir -r requirements.txt`
+   - If your environment strips optional parsers, also ensure: `pip install newspaper3k`
 5. Start command:
    - `gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 1 --timeout 120 app:app`
 6. Set environment variables:

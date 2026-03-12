@@ -2,11 +2,14 @@ Flask
 gunicorn
 joblib
 lime
+lxml
 matplotlib
 nltk
 numpy
 newspaper3k
+beautifulsoup4
 pandas
+requests
 scikit-learn
 seaborn
 shap

@@ -218,10 +218,21 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         if not isinstance(url, str) or not url.strip():
             return jsonify({"error": "A valid URL is required."}), 400
 
-        article_fetcher: Callable[[str], str] = app.config.get("ARTICLE_FETCHER", fetch_article_text)
+        article_fetcher: Callable[[str], str | dict[str, Any]] = app.config.get(
+            "ARTICLE_FETCHER",
+            fetch_article_text,
+        )
 
         try:
-            article_text = article_fetcher(url)
+            article_result = article_fetcher(url)
+            if isinstance(article_result, dict):
+                status_code = _as_int(article_result.get("status_code"), default=400)
+                return jsonify({"error": article_result.get("error", "Unable to analyze URL.")}), status_code
+
+            article_text = article_result
+            if not isinstance(article_text, str) or not article_text.strip():
+                return jsonify({"error": "Unable to extract article text from this URL."}), 400
+
             if len(article_text) > app.config["MAX_INPUT_CHARS"]:
                 return (
                     jsonify(

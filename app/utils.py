@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,8 @@ import numpy as np
 
 from app.explainability import build_explanation_payload
 from app.preprocessing import preprocess_text
+
+LOGGER = logging.getLogger(__name__)
 
 
 def predict_proba_compat(model, vectorizer, preprocessed_text: str) -> tuple[int, float]:
@@ -61,19 +64,29 @@ def run_prediction(
     }
 
 
-def fetch_article_text(url: str) -> str:
+def fetch_article_text(url: str) -> str | dict[str, Any]:
     try:
         from newspaper import Article  # type: ignore
-    except Exception as exc:
-        raise RuntimeError("newspaper3k is not installed. Install dependencies first.") from exc
+    except ImportError:
+        return {"error": "URL analyzer unavailable. newspaper3k dependency missing.", "status_code": 503}
 
-    article = Article(url)
-    article.download()
-    article.parse()
+    try:
+        article = Article(url)
+        article.download()
+        article.parse()
+    except Exception:
+        LOGGER.exception("Failed to download or parse article. url=%s", url)
+        return {
+            "error": "Unable to extract article text from this URL. Please verify the link and try again.",
+            "status_code": 400,
+        }
 
     text = (article.text or "").strip()
     if not text:
-        raise ValueError("Unable to extract article text from URL.")
+        return {
+            "error": "Unable to extract article text from this URL. The page may block scraping.",
+            "status_code": 400,
+        }
     return text
 
 
@@ -107,4 +120,3 @@ def read_jsonl(log_path: str | Path) -> list[dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
     return records
-
