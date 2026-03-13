@@ -135,6 +135,8 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
     app.config.update(
         MODEL_PATH=os.getenv("MODEL_PATH", str(BASE_DIR / "models" / "best_model.joblib")),
         VECTORIZER_PATH=os.getenv("VECTORIZER_PATH", str(BASE_DIR / "models" / "tfidf_vectorizer.joblib")),
+        GNEWS_API_KEY=os.getenv("GNEWS_API_KEY", ""),
+        GOOGLE_FACTCHECK_API_KEY=os.getenv("GOOGLE_FACTCHECK_API_KEY", ""),
         ANALYTICS_LOG_PATH=os.getenv(
             "ANALYTICS_LOG_PATH",
             str(Path(tempfile.gettempdir()) / "prediction_logs.jsonl"),
