@@ -17,6 +17,7 @@ from app.preprocessing import preprocess_text
 LOGGER = logging.getLogger(__name__)
 WHITESPACE_PATTERN = re.compile(r"\s+")
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+EXTRA_SYMBOL_PATTERN = re.compile(r"[^\w\s\.,;:!?\-\"'()/%&]")
 TRUSTED_SOURCE_HOSTS = (
     "bbc.com",
     "reuters.com",
@@ -141,6 +142,7 @@ def _clean_extracted_text(text: str) -> str:
         return ""
     cleaned = unescape(text).replace("\xa0", " ")
     cleaned = HTML_TAG_PATTERN.sub(" ", cleaned)
+    cleaned = EXTRA_SYMBOL_PATTERN.sub(" ", cleaned)
     cleaned = WHITESPACE_PATTERN.sub(" ", cleaned).strip()
     return cleaned
 
@@ -159,7 +161,7 @@ def _download_html(url: str) -> str:
 
     response = requests.get(
         url,
-        timeout=12,
+        timeout=10,
         headers={
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -193,14 +195,10 @@ def _extract_with_trafilatura(url: str) -> str:
 
 def _extract_with_readability(url: str) -> str:
     from readability import Document  # type: ignore
-    from bs4 import BeautifulSoup  # type: ignore
 
     html = _download_html(url)
     doc = Document(html)
-    summary_html = doc.summary(html_partial=True)
-    soup = BeautifulSoup(summary_html, "html.parser")
-    text = soup.get_text(" ", strip=True)
-    return _clean_extracted_text(text)
+    return _clean_extracted_text(doc.summary())
 
 
 def _extract_with_bs4(url: str) -> str:

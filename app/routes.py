@@ -193,8 +193,8 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         if len(text) > app.config["MAX_INPUT_CHARS"]:
             return jsonify({"error": f"Input text too long. Max {app.config['MAX_INPUT_CHARS']} characters."}), 400
 
-        preprocessed_text, token_count = preprocess_and_count_tokens(text)
-        if token_count < 15:
+        original_word_count = len(text.split())
+        if original_word_count < 12:
             return jsonify(
                 {
                     "prediction": "INSUFFICIENT_CONTEXT",
@@ -202,6 +202,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
                     "message": "Input text is too short for reliable classification.",
                 }
             )
+        preprocessed_text, _ = preprocess_and_count_tokens(text)
 
         try:
             response = _predict_payload(
