@@ -11,8 +11,6 @@ from urllib.parse import urlparse
 
 import numpy as np
 
-from app.apis.factcheck_client import search_claim_reviews
-from app.apis.gnews_client import search_news
 from app.explainability import build_explanation_payload
 from app.preprocessing import preprocess_text
 
@@ -173,6 +171,8 @@ def _build_source_score(source_url: str | None, raw_text: str) -> tuple[float, b
 
     if query:
         try:
+            from app.apis.gnews_client import search_news
+
             gnews_articles = search_news(query)
         except Exception:
             LOGGER.exception("gnews_enrichment_failed")
@@ -206,6 +206,8 @@ def _build_factcheck_score(raw_text: str) -> tuple[float, str, str, int]:
         return NEUTRAL_FACTCHECK_SCORE, "", "", 0
 
     try:
+        from app.apis.factcheck_client import search_claim_reviews
+
         reviews = search_claim_reviews(claim)
     except Exception:
         LOGGER.exception("factcheck_enrichment_failed")
