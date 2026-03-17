@@ -21,8 +21,7 @@ COPY . .
 # Optional NLTK resources; build should continue if downloader is unavailable.
 RUN python -m nltk.downloader wordnet omw-1.4 punkt || true
 
-ENV PORT=5000
 ENV WEB_CONCURRENCY=1
-EXPOSE 5000
+EXPOSE 10000
 
-CMD ["sh", "-c", "exec gunicorn --bind 0.0.0.0:${PORT:-10000} --workers ${WEB_CONCURRENCY:-1} --threads 1 --timeout 120 --graceful-timeout 30 --keep-alive 5 --access-logfile - --error-logfile - app:app"]
+CMD ["sh", "-c", "exec gunicorn app:app --bind 0.0.0.0:${PORT:-10000} --workers ${WEB_CONCURRENCY:-1} --threads 1 --timeout 120 --graceful-timeout 30 --keep-alive 5 --access-logfile - --error-logfile -"]
