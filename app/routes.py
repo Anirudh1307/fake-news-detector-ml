@@ -15,7 +15,6 @@ from app.model_loader import (
     is_model_loaded,
     missing_artifacts,
 )
-from dashboard.analytics import build_analytics_summary
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 
@@ -98,6 +97,12 @@ def _read_jsonl(log_path: str | Path) -> list[dict[str, Any]]:
     return read_jsonl(log_path)
 
 
+def _build_analytics_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    from dashboard.analytics import build_analytics_summary
+
+    return build_analytics_summary(records)
+
+
 def _run_prediction(**kwargs: Any) -> dict[str, Any]:
     from app.utils import run_prediction
 
@@ -174,7 +179,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/")
     def index():
-        return render_template("index.html")
+        return jsonify({"status": "ok", "service": "fake-news-detector"}), 200
 
     @app.get("/dashboard")
     def dashboard():
@@ -200,7 +205,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
     @app.get("/api/analytics")
     def analytics():
         records = _read_jsonl(app.config["ANALYTICS_LOG_PATH"])
-        return jsonify(build_analytics_summary(records))
+        return jsonify(_build_analytics_summary(records))
 
     @app.post("/predict")
     def predict():
