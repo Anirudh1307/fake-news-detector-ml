@@ -11,9 +11,6 @@ from urllib.parse import urlparse
 
 import numpy as np
 
-from app.explainability import build_explanation_payload
-from app.preprocessing import preprocess_text
-
 LOGGER = logging.getLogger(__name__)
 WHITESPACE_PATTERN = re.compile(r"\s+")
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
@@ -96,6 +93,8 @@ def _is_trusted_source_name(source_name: str) -> bool:
 
 
 def _extract_keyword_query(raw_text: str, max_keywords: int = 8) -> tuple[str, set[str]]:
+    from app.preprocessing import preprocess_text
+
     processed = preprocess_text(raw_text, remove_stopwords=True, apply_lemmatization=False)
     tokens = [token for token in processed.split() if len(token) >= 3]
 
@@ -237,6 +236,9 @@ def run_prediction(
     source_url: str | None = None,
     preprocessed_text: str | None = None,
 ) -> dict[str, Any]:
+    from app.explainability import build_explanation_payload
+    from app.preprocessing import preprocess_text
+
     preprocessed_text = preprocessed_text if preprocessed_text is not None else preprocess_text(raw_text)
     if not preprocessed_text:
         raise ValueError("Input text does not contain usable language tokens.")

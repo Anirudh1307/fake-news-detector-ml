@@ -10,11 +10,11 @@ from flask import Flask, jsonify, render_template, request
 from app.model_loader import (
     ArtifactLoadError,
     MissingModelArtifactsError,
-    ModelArtifacts,
     create_artifact_loader,
+    get_model,
+    is_model_loaded,
+    missing_artifacts,
 )
-from app.preprocessing import preprocess_and_count_tokens
-from app.utils import append_jsonl, fetch_article_text, read_jsonl, run_prediction
 from dashboard.analytics import build_analytics_summary
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -43,15 +43,6 @@ def _resolve_artifact_paths(config: dict[str, Any]) -> tuple[Path, Path]:
     return model_path, vectorizer_path
 
 
-def _get_artifacts(app: Flask) -> ModelArtifacts:
-    artifacts = app.extensions.get("model_artifacts")
-    if artifacts is None:
-        model_path, vectorizer_path = _resolve_artifact_paths(app.config)
-        artifacts = create_artifact_loader(model_path, vectorizer_path)
-        app.extensions["model_artifacts"] = artifacts
-    return artifacts
-
-
 def _resolve_explainability_flags(
     app: Flask,
     include_shap: bool,
@@ -63,8 +54,8 @@ def _resolve_explainability_flags(
 
 
 def _artifact_error_response(app: Flask, exc: ArtifactLoadError):
-    artifacts = _get_artifacts(app)
-    missing = [str(path) for path in artifacts.missing_files()]
+    model_path, vectorizer_path = _resolve_artifact_paths(app.config)
+    missing = [str(path) for path in missing_artifacts(model_path, vectorizer_path)]
     error_code = "MODEL_ARTIFACTS_MISSING" if missing else "MODEL_ARTIFACT_LOAD_FAILED"
     if isinstance(exc, MissingModelArtifactsError):
         error_code = "MODEL_ARTIFACTS_MISSING"
@@ -73,14 +64,44 @@ def _artifact_error_response(app: Flask, exc: ArtifactLoadError):
             {
                 "error": str(exc),
                 "error_code": error_code,
-                "model_loaded": artifacts.is_ready,
-                "model_path": str(artifacts.model_path),
-                "vectorizer_path": str(artifacts.vectorizer_path),
+                "model_loaded": is_model_loaded(model_path, vectorizer_path),
+                "model_path": str(model_path),
+                "vectorizer_path": str(vectorizer_path),
                 "missing_artifacts": missing,
             }
         ),
         503,
     )
+
+
+def _append_jsonl(log_path: str | Path, payload: dict[str, Any]) -> None:
+    from app.utils import append_jsonl
+
+    append_jsonl(log_path, payload)
+
+
+def _fetch_article_text(url: str) -> str | dict[str, Any]:
+    from app.utils import fetch_article_text
+
+    return fetch_article_text(url)
+
+
+def _preprocess_and_count_tokens(text: str) -> tuple[str, int]:
+    from app.preprocessing import preprocess_and_count_tokens
+
+    return preprocess_and_count_tokens(text)
+
+
+def _read_jsonl(log_path: str | Path) -> list[dict[str, Any]]:
+    from app.utils import read_jsonl
+
+    return read_jsonl(log_path)
+
+
+def _run_prediction(**kwargs: Any) -> dict[str, Any]:
+    from app.utils import run_prediction
+
+    return run_prediction(**kwargs)
 
 
 def _predict_payload(
@@ -92,14 +113,14 @@ def _predict_payload(
     include_shap: bool = False,
     include_lime: bool = False,
 ) -> dict:
-    artifacts = _get_artifacts(app)
-    artifacts.ensure_loaded()
+    model_path, vectorizer_path = _resolve_artifact_paths(app.config)
+    model, vectorizer = get_model(model_path, vectorizer_path)
 
-    result = run_prediction(
+    result = _run_prediction(
         raw_text=text,
         preprocessed_text=preprocessed_text,
-        model=artifacts.model,
-        vectorizer=artifacts.vectorizer,
+        model=model,
+        vectorizer=vectorizer,
         include_shap=include_shap,
         include_lime=include_lime,
         source_url=source_url,
@@ -123,7 +144,7 @@ def _predict_payload(
             "top_real_words": response["top_real_words"],
         },
     }
-    append_jsonl(app.config["ANALYTICS_LOG_PATH"], log_payload)
+    _append_jsonl(app.config["ANALYTICS_LOG_PATH"], log_payload)
     return response
 
 
@@ -148,7 +169,8 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
     if config:
         app.config.update(config)
 
-    _get_artifacts(app)
+    model_path, vectorizer_path = _resolve_artifact_paths(app.config)
+    app.extensions["model_artifacts"] = create_artifact_loader(model_path, vectorizer_path)
 
     @app.get("/")
     def index():
@@ -160,16 +182,16 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/health")
     def health():
-        artifacts = _get_artifacts(app)
-        missing = [str(path) for path in artifacts.missing_files()]
+        model_path, vectorizer_path = _resolve_artifact_paths(app.config)
+        missing = [str(path) for path in missing_artifacts(model_path, vectorizer_path)]
         return jsonify(
             {
                 "status": "ok",
-                "model_loaded": artifacts.is_ready,
+                "model_loaded": is_model_loaded(model_path, vectorizer_path),
                 "model_files_present": not missing,
                 "missing_artifacts": missing,
-                "model_path": str(artifacts.model_path),
-                "vectorizer_path": str(artifacts.vectorizer_path),
+                "model_path": str(model_path),
+                "vectorizer_path": str(vectorizer_path),
                 "enable_shap": _as_bool(app.config.get("ENABLE_SHAP"), default=False),
                 "enable_lime": _as_bool(app.config.get("ENABLE_LIME"), default=False),
             }
@@ -177,7 +199,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/api/analytics")
     def analytics():
-        records = read_jsonl(app.config["ANALYTICS_LOG_PATH"])
+        records = _read_jsonl(app.config["ANALYTICS_LOG_PATH"])
         return jsonify(build_analytics_summary(records))
 
     @app.post("/predict")
@@ -204,7 +226,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
                     "message": "Input text is too short for reliable classification.",
                 }
             )
-        preprocessed_text, _ = preprocess_and_count_tokens(text)
+        preprocessed_text, _ = _preprocess_and_count_tokens(text)
 
         try:
             response = _predict_payload(
@@ -238,7 +260,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
 
         article_fetcher: Callable[[str], str | dict[str, Any]] = app.config.get(
             "ARTICLE_FETCHER",
-            fetch_article_text,
+            _fetch_article_text,
         )
 
         try:
