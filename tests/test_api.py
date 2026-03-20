@@ -43,6 +43,7 @@ def test_predict_endpoint_success(client):
     assert isinstance(payload["top_fake_words"], list)
     assert isinstance(payload["top_real_words"], list)
     assert payload["top_fake_words"] or payload["top_real_words"]
+    assert payload["confidence"] <= 95
 
 
 def test_predict_endpoint_validation(client):
@@ -69,6 +70,7 @@ def test_analyze_url_endpoint_success(client):
     assert "reason" in payload
     assert isinstance(payload["top_fake_words"], list)
     assert isinstance(payload["top_real_words"], list)
+    assert payload["top_fake_words"] or payload["top_real_words"]
 
 
 def test_analyze_url_shortcuts_trusted_domains(test_app):
@@ -82,6 +84,8 @@ def test_analyze_url_shortcuts_trusted_domains(test_app):
     assert payload["prediction"] == "REAL"
     assert payload["confidence"] == 85
     assert payload["domain"] == "bbc.com"
+    assert payload["top_real_words"] == ["trusted_source"]
+    assert payload["top_fake_words"] == []
 
 
 def test_analyze_url_shortcuts_fake_domains(test_app):
@@ -95,6 +99,8 @@ def test_analyze_url_shortcuts_fake_domains(test_app):
     assert payload["prediction"] == "FAKE"
     assert payload["confidence"] == 80
     assert payload["domain"] == "beforeitsnews.com"
+    assert payload["top_fake_words"] == ["low_credibility_domain"]
+    assert payload["top_real_words"] == []
 
 
 def test_analyze_url_returns_insufficient_context_for_social_domains(test_app):

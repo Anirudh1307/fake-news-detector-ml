@@ -353,6 +353,7 @@ def run_prediction(
 
     prediction = int(calibrated_probability >= 0.5)
     confidence = int(round(model_confidence * 100))
+    confidence = min(confidence, 95)
     label = "REAL" if prediction == 1 else "FAKE"
     if 45 <= confidence <= 55:
         label = f"{label} (low confidence)"

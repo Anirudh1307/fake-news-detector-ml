@@ -200,7 +200,8 @@ def _predict_payload(
         source_url=source_url,
     )
 
-    top_words = _get_top_words(vectorizer, preprocessed_text or text)
+    explainability_text = str(result.get("preprocessed_text") or preprocessed_text or text)
+    top_words = _get_top_words(vectorizer, explainability_text)
     is_fake_prediction = str(result["prediction"]).upper().startswith("FAKE")
 
     response = {
@@ -355,10 +356,14 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         domain = _get_domain(url)
         domain_assessment = _classify_domain(url)
         if domain_assessment:
+            domain_top_fake_words = ["low_credibility_domain"] if domain_assessment["prediction"] == "FAKE" else []
+            domain_top_real_words = ["trusted_source"] if domain_assessment["prediction"] == "REAL" else []
             payload = _structured_payload(
                 prediction=domain_assessment["prediction"],
                 confidence=domain_assessment["confidence"],
                 reason=domain_assessment["reason"],
+                top_fake_words=domain_top_fake_words,
+                top_real_words=domain_top_real_words,
                 url=url,
                 domain=domain_assessment["domain"],
                 article_preview="",
