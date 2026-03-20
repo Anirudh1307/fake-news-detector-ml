@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import random
 from datetime import datetime, timezone
 from html import unescape
 from pathlib import Path
@@ -57,6 +56,27 @@ MISINFORMATION_PATTERNS = (
     ("hidden technology", re.compile(r"\bhidden\W+technology\b", re.IGNORECASE)),
     ("leaked documents reveal", re.compile(r"\bleaked\W+documents\W+reveal\b", re.IGNORECASE)),
 )
+REAL_KEYWORDS = (
+    "official",
+    "report",
+    "according",
+    "data",
+    "government",
+)
+FAKE_KEYWORDS = (
+    "breaking",
+    "shocking",
+    "secret",
+    "exposed",
+    "cure",
+    "miracle",
+)
+STRONG_FAKE_CLAIMS = (
+    "teleport",
+    "alien cure",
+    "miracle cure",
+    "time travel",
+)
 MIN_ARTICLE_CHARS = 30
 MIN_ARTICLE_TOKENS = 5
 KEYWORD_FAKE_BOOST_PER_MATCH = 0.03
@@ -65,8 +85,6 @@ UNCERTAIN_LOWER = 0.45
 UNCERTAIN_UPPER = 0.55
 SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+")
 ML_WEIGHT = 0.6
-SOURCE_WEIGHT = 0.2
-KEYWORD_WEIGHT = 0.1
 HYBRID_KEYWORD_WEIGHT = 0.2
 HYBRID_SOURCE_WEIGHT = 0.2
 NEUTRAL_SOURCE_SCORE = 0.5
@@ -240,13 +258,13 @@ def _factcheck_rating_to_real_score(rating: str) -> float:
     return NEUTRAL_FACTCHECK_SCORE
 
 
-def _build_source_score(source_url: str | None, raw_text: str) -> tuple[float, bool, str, bool, int, str]:
+def _build_source_score(source_url: str | None, raw_text: str) -> tuple[float, bool, bool, str, bool, int, str]:
     host = _parse_source_host(source_url)
     domain_assessment = classify_domain(source_url or "")
     trusted_source_match = bool(domain_assessment and domain_assessment.get("classification") == "TRUSTED_DOMAIN")
     fake_source_match = bool(domain_assessment and domain_assessment.get("classification") == "FAKE_DOMAIN")
 
-    source_score = NEUTRAL_SOURCE_SCORE
+    source_score = 0.0
     query, keyword_set = _extract_keyword_query(raw_text)
     gnews_articles: list[dict[str, str]] = []
     gnews_trusted_match = False
@@ -266,11 +284,16 @@ def _build_source_score(source_url: str | None, raw_text: str) -> tuple[float, b
             gnews_trusted_match = True
             break
 
+    if trusted_source_match:
+        source_score += TRUSTED_DOMAIN_SCORE_BOOST
+    elif fake_source_match:
+        source_score += FAKE_DOMAIN_SCORE_PENALTY
+
     if gnews_trusted_match:
         source_score += GNEWS_TRUSTED_MATCH_BONUS
 
     return (
-        float(np.clip(source_score, 0.0, 1.0)),
+        float(np.clip(source_score, -1.0, 1.0)),
         trusted_source_match,
         fake_source_match,
         host,
@@ -280,14 +303,17 @@ def _build_source_score(source_url: str | None, raw_text: str) -> tuple[float, b
     )
 
 
-def _build_keyword_score(raw_text: str) -> tuple[float, float, list[str]]:
-    keyword_fake_boost, matched_keywords = _misinformation_fake_boost(raw_text)
-    if MAX_KEYWORD_FAKE_BOOST <= 0:
-        return 1.0, keyword_fake_boost, matched_keywords
+def _build_keyword_score(raw_text: str) -> tuple[float, float, list[str], list[str]]:
+    text = str(raw_text or "").lower()
+    real_matches = [word for word in REAL_KEYWORDS if re.search(rf"\b{re.escape(word)}\b", text)]
+    fake_matches = [word for word in FAKE_KEYWORDS if re.search(rf"\b{re.escape(word)}\b", text)]
+    keyword_fake_boost, matched_patterns = _misinformation_fake_boost(raw_text)
 
-    penalty_ratio = keyword_fake_boost / MAX_KEYWORD_FAKE_BOOST
-    keyword_score = float(np.clip(1.0 - penalty_ratio, 0.0, 1.0))
-    return keyword_score, keyword_fake_boost, matched_keywords
+    fake_terms = list(dict.fromkeys(fake_matches + matched_patterns))
+    real_score = min(0.4, 0.08 * len(real_matches))
+    fake_score = min(0.6, (0.12 * len(fake_matches)) + keyword_fake_boost)
+    keyword_score = float(np.clip(real_score - fake_score, -1.0, 1.0))
+    return keyword_score, fake_score, real_matches, fake_terms
 
 
 def get_top_words(vectorizer, text: str, top_n: int = 5) -> list[str]:
@@ -338,28 +364,13 @@ def _contains_uncertainty(raw_text: str) -> bool:
     return any(f" {indicator} " in normalized for indicator in UNCERTAINTY_INDICATORS)
 
 
-def _calibrate_confidence(prob: float, add_variation: bool = True) -> int:
-    prob = float(np.clip(prob, 0.0, 0.85))
-
-    if 0.4 <= prob <= 0.6:
-        base_confidence = 50 + (((prob - 0.4) / 0.2) * 10)
-        if add_variation:
-            base_confidence += random.uniform(-2, 2)
-        return int(round(max(50, min(base_confidence, 60))))
-
-    if prob > 0.6:
-        spread = (prob - 0.6) / 0.25 if 0.25 else 0.0
-    else:
-        spread = (0.4 - prob) / 0.4 if 0.4 else 0.0
-
-    base_confidence = 60 + (spread * 25)
-    if add_variation:
-        base_confidence += random.uniform(-3, 3)
-    return int(round(max(60, min(base_confidence, 85))))
-
-
-def _uncertain_confidence() -> int:
-    return int(round(random.uniform(50, 60)))
+def _calibrate_confidence(prob: float, source_score: float) -> int:
+    confidence = abs(float(prob) - 0.5) * 100
+    if source_score > 0:
+        confidence += 5
+    elif source_score < 0:
+        confidence += 5
+    return int(round(min(max(confidence, 40), 90)))
 
 
 def run_prediction(
@@ -377,6 +388,14 @@ def run_prediction(
     preprocessed_text = preprocessed_text if preprocessed_text is not None else preprocess_text(raw_text)
     if not preprocessed_text:
         raise ValueError("Input text does not contain usable language tokens.")
+    if len(str(raw_text or "").strip()) < 20:
+        return {
+            "prediction": "INSUFFICIENT_CONTEXT",
+            "prediction_id": -1,
+            "confidence": 0,
+            "preprocessed_text": preprocessed_text,
+            "explanation": {"hybrid_signals": {}},
+        }
 
     ml_real_score, model_confidence = _ml_scores(model, vectorizer, preprocessed_text)
     (
@@ -388,42 +407,37 @@ def run_prediction(
         gnews_results_count,
         gnews_query,
     ) = _build_source_score(source_url, raw_text)
-    keyword_score, keyword_fake_boost, matched_keywords = _build_keyword_score(raw_text)
+    keyword_score, keyword_fake_boost, matched_real_keywords, matched_fake_keywords = _build_keyword_score(raw_text)
     factcheck_score, extracted_claim, factcheck_rating, factcheck_results_count = _build_factcheck_score(raw_text)
 
-    domain_score_adjustment = TRUSTED_DOMAIN_SCORE_BOOST if trusted_source else 0.0
-    if fake_source:
-        domain_score_adjustment = FAKE_DOMAIN_SCORE_PENALTY
+    lowered_text = str(raw_text or "").lower()
+    strong_fake_match = [phrase for phrase in STRONG_FAKE_CLAIMS if phrase in lowered_text]
 
-    final_real_score = float(
-        np.clip(
-            (ML_WEIGHT * ml_real_score)
-            + (HYBRID_KEYWORD_WEIGHT * keyword_score)
-            + (HYBRID_SOURCE_WEIGHT * source_score)
-            + domain_score_adjustment,
-            0.0,
-            1.0,
-        )
+    prob = min(float(ml_real_score), 0.85)
+    model_score = prob - 0.5
+    final_score = (
+        (ML_WEIGHT * model_score)
+        + (HYBRID_KEYWORD_WEIGHT * keyword_score)
+        + (HYBRID_SOURCE_WEIGHT * source_score)
     )
-    calibrated_probability = round(final_real_score, 2)
-    model_probability = min(float(model_confidence), 0.85)
-    confidence = _calibrate_confidence(model_probability, add_variation=source_url is None)
-    uncertainty_detected = _contains_uncertainty(raw_text) or (UNCERTAIN_LOWER <= model_probability <= UNCERTAIN_UPPER)
+    confidence = _calibrate_confidence(prob, source_score)
+    uncertainty_detected = _contains_uncertainty(raw_text) or (45 <= confidence <= 60)
 
-    if uncertainty_detected or 0.35 <= final_real_score <= 0.65:
-        label = "UNCERTAIN"
-        prediction_id = -1
-        confidence = _uncertain_confidence()
-    elif final_real_score > 0.65:
-        label = "REAL"
-        prediction_id = 1
-    elif final_real_score < 0.35:
+    if strong_fake_match:
         label = "FAKE"
         prediction_id = 0
-    else:
+        confidence = 85
+        final_score = -1.0
+    elif uncertainty_detected:
         label = "UNCERTAIN"
         prediction_id = -1
-        confidence = _uncertain_confidence()
+        confidence = max(45, min(confidence, 60))
+    elif final_score > 0:
+        label = "REAL"
+        prediction_id = 1
+    else:
+        label = "FAKE"
+        prediction_id = 0
 
     explanation = build_explanation_payload(
         raw_text=raw_text,
@@ -436,28 +450,32 @@ def run_prediction(
     explanation["hybrid_signals"] = {
         "ml_real_score": round(ml_real_score, 4),
         "source_host": source_host,
-        "trusted_source_boost": round(TRUSTED_DOMAIN_SCORE_BOOST if trusted_source else 0.0, 4),
-        "fake_source_penalty": round(abs(FAKE_DOMAIN_SCORE_PENALTY) if fake_source else 0.0, 4),
+        "trusted_source_boost": round(source_score if trusted_source and source_score > 0 else 0.0, 4),
+        "fake_source_penalty": round(abs(source_score) if fake_source and source_score < 0 else 0.0, 4),
         "trusted_source_match": trusted_source,
         "fake_source_match": fake_source,
         "source_score": round(source_score, 4),
-        "domain_score_adjustment": round(domain_score_adjustment, 4),
         "gnews_query": gnews_query,
         "gnews_results_count": gnews_results_count,
         "gnews_trusted_match": gnews_trusted_match,
         "model_confidence": confidence,
-        "model_probability": round(model_probability, 4),
+        "model_probability": round(prob, 4),
         "keyword_score": round(keyword_score, 4),
         "keyword_fake_boost": round(keyword_fake_boost, 4),
+        "matched_real_keywords": matched_real_keywords,
         "factcheck_score": round(factcheck_score, 4),
         "factcheck_rating": factcheck_rating,
         "factcheck_results_count": factcheck_results_count,
         "extracted_claim": extracted_claim,
-        "final_real_score": round(final_real_score, 4),
-        "calibrated_probability": calibrated_probability,
-        "matched_misinformation_keywords": matched_keywords,
+        "final_score": round(final_score, 4),
+        "matched_misinformation_keywords": matched_fake_keywords,
         "uncertainty_detected": uncertainty_detected,
+        "strong_fake_match": strong_fake_match,
     }
+
+    print(f"source score: {source_score}")
+    print(f"ML probability: {prob}")
+    print(f"final score: {final_score}")
 
     return {
         "prediction": label.upper(),
@@ -494,11 +512,8 @@ def _download_html(url: str) -> str:
         url,
         timeout=10,
         headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
-            )
+            "User-Agent": "Mozilla/5.0",
+            "Accept-Language": "en-US,en;q=0.9",
         },
     )
     response.raise_for_status()
@@ -550,7 +565,6 @@ def fetch_article_text(url: str) -> str | dict[str, Any]:
         ("trafilatura", _extract_with_trafilatura),
         ("newspaper3k", _extract_with_newspaper),
         ("bs4", _extract_with_bs4),
-        ("readability", _extract_with_readability),
     ]
 
     for stage_name, extractor in extraction_stages:
@@ -570,8 +584,7 @@ def fetch_article_text(url: str) -> str | dict[str, Any]:
             LOGGER.exception("extractor=%s failed url=%s", stage_name, url)
 
     return {
-        "error": "Unable to extract article text from this URL. The site may block scraping or require JavaScript.",
-        "status_code": 400,
+        "error": "Could not extract article",
     }
 
 

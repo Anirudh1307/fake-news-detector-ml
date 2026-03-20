@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import random
 import tempfile
 from typing import Any, Callable
 
@@ -203,21 +202,6 @@ def _finalize_top_words(
     return top_fake_words, top_real_words
 
 
-def _blend_url_confidence(model_confidence: int | float, text: str) -> int:
-    word_count = len(str(text or "").split())
-    if word_count < 100:
-        length_conf = 65
-    elif word_count < 300:
-        length_conf = 72
-    else:
-        length_conf = 80
-
-    confidence = (0.6 * float(model_confidence)) + (0.4 * float(length_conf))
-    confidence = min(confidence, 85)
-    confidence += random.uniform(-3, 3)
-    return int(round(max(60, min(confidence, 85))))
-
-
 def _predict_payload(
     app: Flask,
     text: str,
@@ -248,13 +232,10 @@ def _predict_payload(
         top_words,
         domain_assessment=domain_assessment,
     )
-    confidence = int(result["confidence"])
-    if source == "url" and str(result["prediction"]).upper() in {"REAL", "FAKE"}:
-        confidence = _blend_url_confidence(confidence, text)
 
     response = {
         "prediction": str(result["prediction"]).upper(),
-        "confidence": confidence,
+        "confidence": int(result["confidence"]),
         "reason": _build_prediction_reason(result["prediction"], source=source),
         "top_fake_words": top_fake_words,
         "top_real_words": top_real_words,
@@ -425,19 +406,6 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             )
             return jsonify(payload)
 
-        if _is_non_article_url(url):
-            return jsonify(
-                _structured_payload(
-                    prediction="INSUFFICIENT_CONTEXT",
-                    confidence=0,
-                    reason="Content extraction failed or insufficient text.",
-                    url=url,
-                    domain=domain,
-                    article_preview="",
-                    article_char_count=0,
-                )
-            )
-
         article_fetcher: Callable[[str], str | dict[str, Any]] = app.config.get(
             "ARTICLE_FETCHER",
             _fetch_article_text,
@@ -446,13 +414,25 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         try:
             article_result = article_fetcher(url)
             if isinstance(article_result, dict):
-                article_text = article_result.get("text", "")
+                return jsonify(
+                    _structured_payload(
+                        prediction="UNCERTAIN",
+                        confidence=40,
+                        reason=article_result.get("error", "Could not extract article"),
+                        error=article_result.get("error", "Could not extract article"),
+                        url=url,
+                        domain=domain,
+                        article_preview="",
+                        article_char_count=0,
+                    )
+                )
             else:
                 article_text = article_result
 
             article_text = article_text if isinstance(article_text, str) else ""
             article_text = article_text.strip()
-            if not article_text or len(article_text) < 30:
+            print(f"extracted text length: {len(article_text)}")
+            if not article_text:
                 return jsonify(
                     _structured_payload(
                         prediction="INSUFFICIENT_CONTEXT",
