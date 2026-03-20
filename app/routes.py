@@ -6,6 +6,7 @@ import tempfile
 from typing import Any, Callable
 
 from flask import Flask, jsonify, render_template, request
+from jinja2 import TemplateNotFound
 
 from app.model_loader import (
     ArtifactLoadError,
@@ -179,7 +180,24 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/")
     def index():
-        return jsonify({"status": "ok", "service": "fake-news-detector"}), 200
+        try:
+            return render_template("index.html")
+        except TemplateNotFound as exc:
+            return (
+                jsonify(
+                    {
+                        "error": "Template 'index.html' not found.",
+                        "template_folder": app.template_folder,
+                        "expected_template": "index.html",
+                        "details": str(exc),
+                    }
+                ),
+                500,
+            )
+
+    @app.get("/version")
+    def version():
+        return "NEW VERSION", 200
 
     @app.get("/dashboard")
     def dashboard():

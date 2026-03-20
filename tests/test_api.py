@@ -1,3 +1,15 @@
+def test_root_renders_index_html(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "text/html" in response.content_type
+
+
+def test_version_route_returns_new_version(client):
+    response = client.get("/version")
+    assert response.status_code == 200
+    assert response.get_data(as_text=True) == "NEW VERSION"
+
+
 def test_predict_endpoint_success(client):
     response = client.post(
         "/predict",
@@ -37,4 +49,3 @@ def test_analytics_endpoint(client):
     payload = response.get_json()
     assert "total_analyzed" in payload
     assert "prediction_distribution" in payload
-
