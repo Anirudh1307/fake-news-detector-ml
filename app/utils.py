@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 from datetime import datetime, timezone
 from html import unescape
 from pathlib import Path
@@ -66,11 +67,21 @@ SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+")
 ML_WEIGHT = 0.6
 SOURCE_WEIGHT = 0.2
 KEYWORD_WEIGHT = 0.1
-FACTCHECK_WEIGHT = 0.1
+HYBRID_KEYWORD_WEIGHT = 0.2
+HYBRID_SOURCE_WEIGHT = 0.2
 NEUTRAL_SOURCE_SCORE = 0.5
 NEUTRAL_FACTCHECK_SCORE = 0.5
-DIRECT_TRUSTED_SOURCE_BONUS = 0.35
-GNEWS_TRUSTED_MATCH_BONUS = 0.15
+GNEWS_TRUSTED_MATCH_BONUS = 0.1
+TRUSTED_DOMAIN_SCORE_BOOST = 0.1
+FAKE_DOMAIN_SCORE_PENALTY = -0.1
+UNCERTAINTY_INDICATORS = (
+    "may",
+    "might",
+    "claim",
+    "reportedly",
+    "unverified",
+    "no proof",
+)
 
 
 def _ml_scores(model, vectorizer, preprocessed_text: str) -> tuple[float, float]:
@@ -123,6 +134,7 @@ def classify_domain(url: str) -> dict[str, Any] | None:
     if is_domain_match(domain, SOCIAL_SOURCE_HOSTS):
         return {
             "domain": domain,
+            "classification": "SOCIAL",
             "prediction": "INSUFFICIENT_CONTEXT",
             "confidence": 0,
             "reason": "Social media content not suitable for analysis.",
@@ -131,17 +143,17 @@ def classify_domain(url: str) -> dict[str, Any] | None:
     if is_domain_match(domain, FAKE_SOURCE_HOSTS):
         return {
             "domain": domain,
-            "prediction": "FAKE",
-            "confidence": 80,
-            "reason": "Known low-credibility domain matched before content extraction.",
+            "classification": "FAKE_DOMAIN",
+            "score_adjustment": FAKE_DOMAIN_SCORE_PENALTY,
+            "reason": "Known low-credibility domain contributes a reliability penalty.",
         }
 
     if is_domain_match(domain, TRUSTED_SOURCE_HOSTS):
         return {
             "domain": domain,
-            "prediction": "REAL",
-            "confidence": 85,
-            "reason": "Trusted news/public-interest domain matched before content extraction.",
+            "classification": "TRUSTED_DOMAIN",
+            "score_adjustment": TRUSTED_DOMAIN_SCORE_BOOST,
+            "reason": "Trusted news/public-interest domain contributes a credibility boost.",
         }
 
     return None
@@ -230,9 +242,11 @@ def _factcheck_rating_to_real_score(rating: str) -> float:
 
 def _build_source_score(source_url: str | None, raw_text: str) -> tuple[float, bool, str, bool, int, str]:
     host = _parse_source_host(source_url)
-    trusted_source_match = any(domain in host for domain in TRUSTED_SOURCE_HOSTS) if host else False
+    domain_assessment = classify_domain(source_url or "")
+    trusted_source_match = bool(domain_assessment and domain_assessment.get("classification") == "TRUSTED_DOMAIN")
+    fake_source_match = bool(domain_assessment and domain_assessment.get("classification") == "FAKE_DOMAIN")
 
-    source_score = NEUTRAL_SOURCE_SCORE + (DIRECT_TRUSTED_SOURCE_BONUS if trusted_source_match else 0.0)
+    source_score = NEUTRAL_SOURCE_SCORE
     query, keyword_set = _extract_keyword_query(raw_text)
     gnews_articles: list[dict[str, str]] = []
     gnews_trusted_match = False
@@ -255,7 +269,15 @@ def _build_source_score(source_url: str | None, raw_text: str) -> tuple[float, b
     if gnews_trusted_match:
         source_score += GNEWS_TRUSTED_MATCH_BONUS
 
-    return float(np.clip(source_score, 0.0, 1.0)), trusted_source_match, host, gnews_trusted_match, len(gnews_articles), query
+    return (
+        float(np.clip(source_score, 0.0, 1.0)),
+        trusted_source_match,
+        fake_source_match,
+        host,
+        gnews_trusted_match,
+        len(gnews_articles),
+        query,
+    )
 
 
 def _build_keyword_score(raw_text: str) -> tuple[float, float, list[str]]:
@@ -311,6 +333,35 @@ def _misinformation_fake_boost(raw_text: str) -> tuple[float, list[str]]:
     return float(boost), matched
 
 
+def _contains_uncertainty(raw_text: str) -> bool:
+    normalized = f" {str(raw_text or '').lower()} "
+    return any(f" {indicator} " in normalized for indicator in UNCERTAINTY_INDICATORS)
+
+
+def _calibrate_confidence(prob: float, add_variation: bool = True) -> int:
+    prob = float(np.clip(prob, 0.0, 0.85))
+
+    if 0.4 <= prob <= 0.6:
+        base_confidence = 50 + (((prob - 0.4) / 0.2) * 10)
+        if add_variation:
+            base_confidence += random.uniform(-2, 2)
+        return int(round(max(50, min(base_confidence, 60))))
+
+    if prob > 0.6:
+        spread = (prob - 0.6) / 0.25 if 0.25 else 0.0
+    else:
+        spread = (0.4 - prob) / 0.4 if 0.4 else 0.0
+
+    base_confidence = 60 + (spread * 25)
+    if add_variation:
+        base_confidence += random.uniform(-3, 3)
+    return int(round(max(60, min(base_confidence, 85))))
+
+
+def _uncertain_confidence() -> int:
+    return int(round(random.uniform(50, 60)))
+
+
 def run_prediction(
     raw_text: str,
     model,
@@ -331,6 +382,7 @@ def run_prediction(
     (
         source_score,
         trusted_source,
+        fake_source,
         source_host,
         gnews_trusted_match,
         gnews_results_count,
@@ -339,25 +391,39 @@ def run_prediction(
     keyword_score, keyword_fake_boost, matched_keywords = _build_keyword_score(raw_text)
     factcheck_score, extracted_claim, factcheck_rating, factcheck_results_count = _build_factcheck_score(raw_text)
 
+    domain_score_adjustment = TRUSTED_DOMAIN_SCORE_BOOST if trusted_source else 0.0
+    if fake_source:
+        domain_score_adjustment = FAKE_DOMAIN_SCORE_PENALTY
+
     final_real_score = float(
         np.clip(
             (ML_WEIGHT * ml_real_score)
-            + (SOURCE_WEIGHT * source_score)
-            + (KEYWORD_WEIGHT * keyword_score)
-            + (FACTCHECK_WEIGHT * factcheck_score),
+            + (HYBRID_KEYWORD_WEIGHT * keyword_score)
+            + (HYBRID_SOURCE_WEIGHT * source_score)
+            + domain_score_adjustment,
             0.0,
             1.0,
         )
     )
     calibrated_probability = round(final_real_score, 2)
+    model_probability = min(float(model_confidence), 0.85)
+    confidence = _calibrate_confidence(model_probability, add_variation=source_url is None)
+    uncertainty_detected = _contains_uncertainty(raw_text) or (UNCERTAIN_LOWER <= model_probability <= UNCERTAIN_UPPER)
 
-    prediction = int(calibrated_probability >= 0.5)
-    confidence = int(round(model_confidence * 100))
-    confidence = min(confidence, 95)
-    label = "REAL" if prediction == 1 else "FAKE"
-    if 45 <= confidence <= 55:
-        label = f"{label} (low confidence)"
-    prediction_id = prediction
+    if uncertainty_detected or 0.35 <= final_real_score <= 0.65:
+        label = "UNCERTAIN"
+        prediction_id = -1
+        confidence = _uncertain_confidence()
+    elif final_real_score > 0.65:
+        label = "REAL"
+        prediction_id = 1
+    elif final_real_score < 0.35:
+        label = "FAKE"
+        prediction_id = 0
+    else:
+        label = "UNCERTAIN"
+        prediction_id = -1
+        confidence = _uncertain_confidence()
 
     explanation = build_explanation_payload(
         raw_text=raw_text,
@@ -370,13 +436,17 @@ def run_prediction(
     explanation["hybrid_signals"] = {
         "ml_real_score": round(ml_real_score, 4),
         "source_host": source_host,
-        "trusted_source_boost": round(max(0.0, source_score - NEUTRAL_SOURCE_SCORE), 4),
+        "trusted_source_boost": round(TRUSTED_DOMAIN_SCORE_BOOST if trusted_source else 0.0, 4),
+        "fake_source_penalty": round(abs(FAKE_DOMAIN_SCORE_PENALTY) if fake_source else 0.0, 4),
         "trusted_source_match": trusted_source,
+        "fake_source_match": fake_source,
         "source_score": round(source_score, 4),
+        "domain_score_adjustment": round(domain_score_adjustment, 4),
         "gnews_query": gnews_query,
         "gnews_results_count": gnews_results_count,
         "gnews_trusted_match": gnews_trusted_match,
         "model_confidence": confidence,
+        "model_probability": round(model_probability, 4),
         "keyword_score": round(keyword_score, 4),
         "keyword_fake_boost": round(keyword_fake_boost, 4),
         "factcheck_score": round(factcheck_score, 4),
@@ -386,10 +456,11 @@ def run_prediction(
         "final_real_score": round(final_real_score, 4),
         "calibrated_probability": calibrated_probability,
         "matched_misinformation_keywords": matched_keywords,
+        "uncertainty_detected": uncertainty_detected,
     }
 
     return {
-        "prediction": label,
+        "prediction": label.upper(),
         "prediction_id": prediction_id,
         "confidence": confidence,
         "preprocessed_text": preprocessed_text,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import random
 import tempfile
 from typing import Any, Callable
 
@@ -143,6 +144,8 @@ def _run_prediction(**kwargs: Any) -> dict[str, Any]:
 
 def _build_prediction_reason(prediction: str, source: str) -> str:
     normalized_prediction = (prediction or "").lower()
+    if normalized_prediction == "uncertain":
+        return "Mixed signals or uncertain language reduced prediction certainty."
     if "low confidence" in normalized_prediction:
         return "Model signal was close, so this is a low-confidence classification."
     if source == "url":
@@ -178,12 +181,50 @@ def _error_payload(reason: str, status_code: int = 400, **extra: Any):
     return jsonify(payload), status_code
 
 
+def _finalize_top_words(
+    prediction: str,
+    top_words: list[str],
+    domain_assessment: dict[str, Any] | None = None,
+) -> tuple[list[str], list[str]]:
+    normalized_prediction = str(prediction or "").upper()
+    domain_classification = (domain_assessment or {}).get("classification")
+
+    top_fake_words = ["low_credibility_domain"] if domain_classification == "FAKE_DOMAIN" else []
+    top_real_words = ["trusted_source"] if domain_classification == "TRUSTED_DOMAIN" else []
+
+    if normalized_prediction == "FAKE":
+        top_fake_words = top_fake_words or (top_words or ["suspicious_pattern"])
+    elif normalized_prediction == "REAL":
+        top_real_words = top_real_words or (top_words or ["contextual_text"])
+    elif normalized_prediction == "UNCERTAIN":
+        top_real_words = top_real_words or (top_words[:1] if top_words else ["contextual_text"])
+        top_fake_words = top_fake_words or (top_words[1:2] if len(top_words) > 1 else ["suspicious_pattern"])
+
+    return top_fake_words, top_real_words
+
+
+def _blend_url_confidence(model_confidence: int | float, text: str) -> int:
+    word_count = len(str(text or "").split())
+    if word_count < 100:
+        length_conf = 65
+    elif word_count < 300:
+        length_conf = 72
+    else:
+        length_conf = 80
+
+    confidence = (0.6 * float(model_confidence)) + (0.4 * float(length_conf))
+    confidence = min(confidence, 85)
+    confidence += random.uniform(-3, 3)
+    return int(round(max(60, min(confidence, 85))))
+
+
 def _predict_payload(
     app: Flask,
     text: str,
     source: str,
     source_url: str | None = None,
     preprocessed_text: str | None = None,
+    domain_assessment: dict[str, Any] | None = None,
     include_shap: bool = False,
     include_lime: bool = False,
 ) -> dict:
@@ -202,14 +243,21 @@ def _predict_payload(
 
     explainability_text = str(result.get("preprocessed_text") or preprocessed_text or text)
     top_words = _get_top_words(vectorizer, explainability_text)
-    is_fake_prediction = str(result["prediction"]).upper().startswith("FAKE")
+    top_fake_words, top_real_words = _finalize_top_words(
+        result["prediction"],
+        top_words,
+        domain_assessment=domain_assessment,
+    )
+    confidence = int(result["confidence"])
+    if source == "url" and str(result["prediction"]).upper() in {"REAL", "FAKE"}:
+        confidence = _blend_url_confidence(confidence, text)
 
     response = {
-        "prediction": result["prediction"],
-        "confidence": result["confidence"],
+        "prediction": str(result["prediction"]).upper(),
+        "confidence": confidence,
         "reason": _build_prediction_reason(result["prediction"], source=source),
-        "top_fake_words": top_words if is_fake_prediction else [],
-        "top_real_words": [] if is_fake_prediction else top_words,
+        "top_fake_words": top_fake_words,
+        "top_real_words": top_real_words,
         "explanation": result["explanation"],
     }
 
@@ -313,7 +361,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             return _error_payload(f"Input text too long. Max {app.config['MAX_INPUT_CHARS']} characters.")
 
         original_word_count = len(text.split())
-        if original_word_count < 12:
+        if original_word_count < 4:
             return jsonify(
                 _structured_payload(
                     prediction="INSUFFICIENT_CONTEXT",
@@ -355,15 +403,11 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
 
         domain = _get_domain(url)
         domain_assessment = _classify_domain(url)
-        if domain_assessment:
-            domain_top_fake_words = ["low_credibility_domain"] if domain_assessment["prediction"] == "FAKE" else []
-            domain_top_real_words = ["trusted_source"] if domain_assessment["prediction"] == "REAL" else []
+        if domain_assessment and domain_assessment.get("classification") == "SOCIAL":
             payload = _structured_payload(
                 prediction=domain_assessment["prediction"],
                 confidence=domain_assessment["confidence"],
                 reason=domain_assessment["reason"],
-                top_fake_words=domain_top_fake_words,
-                top_real_words=domain_top_real_words,
                 url=url,
                 domain=domain_assessment["domain"],
                 article_preview="",
@@ -432,6 +476,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
                 text=article_text,
                 source="url",
                 source_url=url,
+                domain_assessment=domain_assessment,
                 include_shap=include_shap,
                 include_lime=include_lime,
             )

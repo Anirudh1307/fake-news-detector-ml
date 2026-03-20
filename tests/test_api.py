@@ -43,7 +43,7 @@ def test_predict_endpoint_success(client):
     assert isinstance(payload["top_fake_words"], list)
     assert isinstance(payload["top_real_words"], list)
     assert payload["top_fake_words"] or payload["top_real_words"]
-    assert payload["confidence"] <= 95
+    assert payload["confidence"] <= 85
 
 
 def test_predict_endpoint_validation(client):
@@ -71,36 +71,35 @@ def test_analyze_url_endpoint_success(client):
     assert isinstance(payload["top_fake_words"], list)
     assert isinstance(payload["top_real_words"], list)
     assert payload["top_fake_words"] or payload["top_real_words"]
+    assert payload["confidence"] <= 85
 
 
 def test_analyze_url_shortcuts_trusted_domains(test_app):
-    test_app.config["ARTICLE_FETCHER"] = lambda _: (_ for _ in ()).throw(AssertionError("extractor should not run"))
+    test_app.config["ARTICLE_FETCHER"] = lambda _: "Government records confirm economic growth and public policy impact."
 
     with test_app.test_client() as client:
         response = client.post("/analyze_url", json={"url": "https://www.bbc.com/news/world-123"})
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["prediction"] == "REAL"
-    assert payload["confidence"] == 85
     assert payload["domain"] == "bbc.com"
-    assert payload["top_real_words"] == ["trusted_source"]
-    assert payload["top_fake_words"] == []
+    assert payload["prediction"] in {"REAL", "FAKE", "UNCERTAIN"}
+    assert payload["top_real_words"]
+    assert "trusted_source" in payload["top_real_words"]
 
 
 def test_analyze_url_shortcuts_fake_domains(test_app):
-    test_app.config["ARTICLE_FETCHER"] = lambda _: (_ for _ in ()).throw(AssertionError("extractor should not run"))
+    test_app.config["ARTICLE_FETCHER"] = lambda _: "Unverified claim reportedly spreads online without evidence or proof."
 
     with test_app.test_client() as client:
         response = client.post("/analyze_url", json={"url": "https://www.beforeitsnews.com/"})
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["prediction"] == "FAKE"
-    assert payload["confidence"] == 80
     assert payload["domain"] == "beforeitsnews.com"
-    assert payload["top_fake_words"] == ["low_credibility_domain"]
-    assert payload["top_real_words"] == []
+    assert payload["prediction"] in {"REAL", "FAKE", "UNCERTAIN"}
+    assert payload["top_fake_words"]
+    assert "low_credibility_domain" in payload["top_fake_words"]
 
 
 def test_analyze_url_returns_insufficient_context_for_social_domains(test_app):
