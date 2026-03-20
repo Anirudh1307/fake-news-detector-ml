@@ -268,6 +268,21 @@ def _build_keyword_score(raw_text: str) -> tuple[float, float, list[str]]:
     return keyword_score, keyword_fake_boost, matched_keywords
 
 
+def get_top_words(vectorizer, text: str, top_n: int = 5) -> list[str]:
+    if not isinstance(text, str) or not text.strip():
+        return []
+
+    X = vectorizer.transform([text])
+    if X.nnz == 0:
+        return []
+
+    feature_names = vectorizer.get_feature_names_out()
+    scores = X.toarray()[0]
+    top_indices = scores.argsort()[-top_n:][::-1]
+
+    return [str(feature_names[i]) for i in top_indices if scores[i] > 0]
+
+
 def _build_factcheck_score(raw_text: str) -> tuple[float, str, str, int]:
     claim = _extract_claim(raw_text)
     if not claim:

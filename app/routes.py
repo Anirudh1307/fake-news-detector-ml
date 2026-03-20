@@ -105,6 +105,12 @@ def _get_domain(url: str) -> str:
     return get_domain(url)
 
 
+def _get_top_words(vectorizer, text: str, top_n: int = 5) -> list[str]:
+    from app.utils import get_top_words
+
+    return get_top_words(vectorizer, text, top_n=top_n)
+
+
 def _is_non_article_url(url: str) -> bool:
     from app.utils import is_non_article_url
 
@@ -154,6 +160,8 @@ def _structured_payload(
         "prediction": prediction,
         "confidence": int(round(confidence)),
         "reason": reason,
+        "top_fake_words": [],
+        "top_real_words": [],
     }
     payload.update(extra)
     return payload
@@ -192,12 +200,15 @@ def _predict_payload(
         source_url=source_url,
     )
 
+    top_words = _get_top_words(vectorizer, preprocessed_text or text)
+    is_fake_prediction = str(result["prediction"]).upper().startswith("FAKE")
+
     response = {
         "prediction": result["prediction"],
         "confidence": result["confidence"],
         "reason": _build_prediction_reason(result["prediction"], source=source),
-        "top_fake_words": result["explanation"].get("top_fake_words", []),
-        "top_real_words": result["explanation"].get("top_real_words", []),
+        "top_fake_words": top_words if is_fake_prediction else [],
+        "top_real_words": [] if is_fake_prediction else top_words,
         "explanation": result["explanation"],
     }
 

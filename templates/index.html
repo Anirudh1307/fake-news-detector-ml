@@ -106,6 +106,16 @@
         const limeList = document.getElementById('lime-list');
         const urlPreview = document.getElementById('url-preview');
 
+        function formatTopWord(item) {
+            if (typeof item === 'string') {
+                return item;
+            }
+            if (item && typeof item.word === 'string') {
+                return item.word;
+            }
+            return String(item ?? '');
+        }
+
         function renderWordList(element, words, formatter) {
             element.innerHTML = '';
             if (!words || !words.length) {
@@ -145,8 +155,8 @@
                 confidenceValue.classList.add('text-emerald-700');
             }
 
-            renderWordList(fakeWords, data.top_fake_words, (item) => `${item.word}: ${Number(item.weight).toFixed(3)}`);
-            renderWordList(realWords, data.top_real_words, (item) => `${item.word}: ${Number(item.weight).toFixed(3)}`);
+            renderWordList(fakeWords, data.top_fake_words, formatTopWord);
+            renderWordList(realWords, data.top_real_words, formatTopWord);
 
             const shap = data.explanation?.shap;
             if (shap?.available) {

@@ -40,6 +40,9 @@ def test_predict_endpoint_success(client):
     assert "reason" in payload
     assert "top_fake_words" in payload
     assert "top_real_words" in payload
+    assert isinstance(payload["top_fake_words"], list)
+    assert isinstance(payload["top_real_words"], list)
+    assert payload["top_fake_words"] or payload["top_real_words"]
 
 
 def test_predict_endpoint_validation(client):
@@ -64,6 +67,8 @@ def test_analyze_url_endpoint_success(client):
     assert "article_preview" in payload
     assert payload["prediction"].startswith(("FAKE", "REAL"))
     assert "reason" in payload
+    assert isinstance(payload["top_fake_words"], list)
+    assert isinstance(payload["top_real_words"], list)
 
 
 def test_analyze_url_shortcuts_trusted_domains(test_app):
