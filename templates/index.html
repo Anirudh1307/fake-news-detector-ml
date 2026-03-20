@@ -137,7 +137,7 @@
 
             predictionLabel.className = 'text-3xl font-extrabold';
             confidenceValue.className = 'text-3xl font-extrabold';
-            if (data.prediction === 'FAKE NEWS') {
+            if ((data.prediction || '').toUpperCase().startsWith('FAKE')) {
                 predictionLabel.classList.add('text-red-700');
                 confidenceValue.classList.add('text-red-700');
             } else {

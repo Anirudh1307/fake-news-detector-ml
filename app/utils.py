@@ -18,9 +18,25 @@ EXTRA_SYMBOL_PATTERN = re.compile(r"[^\w\s\.,;:!?\-\"'()/%&]")
 TRUSTED_SOURCE_HOSTS = (
     "bbc.com",
     "reuters.com",
+    "thehindu.com",
+    "indianexpress.com",
+    "gov.in",
     "apnews.com",
     "nytimes.com",
     "theguardian.com",
+)
+FAKE_SOURCE_HOSTS = (
+    "beforeitsnews.com",
+    "worldnewsdailyreport.com",
+)
+NON_ARTICLE_PATHS = frozenset(
+    {
+        "",
+        "/",
+        "/news",
+        "/world",
+        "/india",
+    }
 )
 TRUSTED_SOURCE_ALIASES = (
     "bbc",
@@ -44,8 +60,8 @@ MISINFORMATION_PATTERNS = (
     ("hidden technology", re.compile(r"\bhidden\W+technology\b", re.IGNORECASE)),
     ("leaked documents reveal", re.compile(r"\bleaked\W+documents\W+reveal\b", re.IGNORECASE)),
 )
-MIN_ARTICLE_CHARS = 200
-MIN_ARTICLE_TOKENS = 30
+MIN_ARTICLE_CHARS = 50
+MIN_ARTICLE_TOKENS = 10
 KEYWORD_FAKE_BOOST_PER_MATCH = 0.03
 MAX_KEYWORD_FAKE_BOOST = 0.15
 UNCERTAIN_LOWER = 0.45
@@ -61,28 +77,81 @@ DIRECT_TRUSTED_SOURCE_BONUS = 0.35
 GNEWS_TRUSTED_MATCH_BONUS = 0.15
 
 
-def _ml_probability_real(model, vectorizer, preprocessed_text: str) -> float:
+def _ml_scores(model, vectorizer, preprocessed_text: str) -> tuple[float, float]:
     X = vectorizer.transform([preprocessed_text])
 
     if hasattr(model, "predict_proba"):
         probs = model.predict_proba(X)[0]
-        return float(probs[1])
+        prob_real = float(probs[1])
+        confidence = float(np.max(probs))
+        return prob_real, confidence
 
     if hasattr(model, "decision_function"):
         decision = float(np.ravel(model.decision_function(X))[0])
-        return float(1.0 / (1.0 + np.exp(-decision)))
+        prob_real = float(1.0 / (1.0 + np.exp(-decision)))
+        return prob_real, max(prob_real, 1.0 - prob_real)
 
     prediction = int(model.predict(X)[0])
-    return 1.0 if prediction == 1 else 0.0
+    prob_real = 1.0 if prediction == 1 else 0.0
+    return prob_real, 1.0
 
 
 def _parse_source_host(source_url: str | None) -> str:
     if not source_url:
         return ""
     try:
-        return (urlparse(source_url).hostname or "").lower()
+        return get_domain(source_url)
     except Exception:
         return ""
+
+
+def _domain_matches(host: str, domains: tuple[str, ...]) -> bool:
+    return any(host == domain or host.endswith(f".{domain}") for domain in domains)
+
+
+def get_domain(url: str) -> str:
+    if not isinstance(url, str):
+        return ""
+
+    hostname = (urlparse(url).hostname or "").lower().strip()
+    if hostname.startswith("www."):
+        hostname = hostname[4:]
+    return hostname
+
+
+def classify_domain(url: str) -> dict[str, Any] | None:
+    domain = get_domain(url)
+    if not domain:
+        return None
+
+    if _domain_matches(domain, FAKE_SOURCE_HOSTS):
+        return {
+            "domain": domain,
+            "prediction": "FAKE",
+            "confidence": 80,
+            "reason": "Known low-credibility domain matched before content extraction.",
+        }
+
+    if _domain_matches(domain, TRUSTED_SOURCE_HOSTS):
+        return {
+            "domain": domain,
+            "prediction": "REAL",
+            "confidence": 85,
+            "reason": "Trusted news/public-interest domain matched before content extraction.",
+        }
+
+    return None
+
+
+def is_non_article_url(url: str) -> bool:
+    if not isinstance(url, str):
+        return True
+
+    parsed = urlparse(url)
+    path = (parsed.path or "").strip().lower().rstrip("/")
+    if path in {"", "/"}:
+        return True
+    return path in NON_ARTICLE_PATHS
 
 
 def _is_trusted_source_name(source_name: str) -> bool:
@@ -243,7 +312,7 @@ def run_prediction(
     if not preprocessed_text:
         raise ValueError("Input text does not contain usable language tokens.")
 
-    ml_real_score = _ml_probability_real(model, vectorizer, preprocessed_text)
+    ml_real_score, model_confidence = _ml_scores(model, vectorizer, preprocessed_text)
     (
         source_score,
         trusted_source,
@@ -268,10 +337,11 @@ def run_prediction(
     calibrated_probability = round(final_real_score, 2)
 
     prediction = int(calibrated_probability >= 0.5)
-    confidence = calibrated_probability if prediction == 1 else 1.0 - calibrated_probability
-    is_uncertain = UNCERTAIN_LOWER < calibrated_probability < UNCERTAIN_UPPER
-    label = "UNCERTAIN" if is_uncertain else ("FAKE NEWS" if prediction == 0 else "REAL NEWS")
-    prediction_id = -1 if is_uncertain else prediction
+    confidence = int(round(model_confidence * 100))
+    label = "REAL" if prediction == 1 else "FAKE"
+    if 45 <= confidence <= 55:
+        label = f"{label} (low confidence)"
+    prediction_id = prediction
 
     explanation = build_explanation_payload(
         raw_text=raw_text,
@@ -290,6 +360,7 @@ def run_prediction(
         "gnews_query": gnews_query,
         "gnews_results_count": gnews_results_count,
         "gnews_trusted_match": gnews_trusted_match,
+        "model_confidence": confidence,
         "keyword_score": round(keyword_score, 4),
         "keyword_fake_boost": round(keyword_fake_boost, 4),
         "factcheck_score": round(factcheck_score, 4),
@@ -304,7 +375,7 @@ def run_prediction(
     return {
         "prediction": label,
         "prediction_id": prediction_id,
-        "confidence": round(confidence * 100, 2),
+        "confidence": confidence,
         "preprocessed_text": preprocessed_text,
         "explanation": explanation,
     }
@@ -391,8 +462,8 @@ def fetch_article_text(url: str) -> str | dict[str, Any]:
     extraction_stages = [
         ("trafilatura", _extract_with_trafilatura),
         ("newspaper3k", _extract_with_newspaper),
-        ("readability", _extract_with_readability),
         ("bs4", _extract_with_bs4),
+        ("readability", _extract_with_readability),
     ]
 
     for stage_name, extractor in extraction_stages:

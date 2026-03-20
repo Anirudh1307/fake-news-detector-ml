@@ -62,6 +62,9 @@ def _artifact_error_response(app: Flask, exc: ArtifactLoadError):
     return (
         jsonify(
             {
+                "prediction": "INSUFFICIENT_CONTEXT",
+                "confidence": 0,
+                "reason": str(exc),
                 "error": str(exc),
                 "error_code": error_code,
                 "model_loaded": is_model_loaded(model_path, vectorizer_path),
@@ -84,10 +87,28 @@ def _append_jsonl(log_path: str | Path, payload: dict[str, Any]) -> None:
     append_jsonl(log_path, payload)
 
 
+def _classify_domain(url: str) -> dict[str, Any] | None:
+    from app.utils import classify_domain
+
+    return classify_domain(url)
+
+
 def _fetch_article_text(url: str) -> str | dict[str, Any]:
     from app.utils import fetch_article_text
 
     return fetch_article_text(url)
+
+
+def _get_domain(url: str) -> str:
+    from app.utils import get_domain
+
+    return get_domain(url)
+
+
+def _is_non_article_url(url: str) -> bool:
+    from app.utils import is_non_article_url
+
+    return is_non_article_url(url)
 
 
 def _preprocess_and_count_tokens(text: str) -> tuple[str, int]:
@@ -112,6 +133,41 @@ def _run_prediction(**kwargs: Any) -> dict[str, Any]:
     from app.utils import run_prediction
 
     return run_prediction(**kwargs)
+
+
+def _build_prediction_reason(prediction: str, source: str) -> str:
+    normalized_prediction = (prediction or "").lower()
+    if "low confidence" in normalized_prediction:
+        return "Model signal was close, so this is a low-confidence classification."
+    if source == "url":
+        return "Prediction based on extracted article text, domain clues, and credibility signals."
+    return "Prediction based on text classification and credibility signals."
+
+
+def _structured_payload(
+    prediction: str,
+    confidence: int | float,
+    reason: str,
+    **extra: Any,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "prediction": prediction,
+        "confidence": int(round(confidence)),
+        "reason": reason,
+    }
+    payload.update(extra)
+    return payload
+
+
+def _error_payload(reason: str, status_code: int = 400, **extra: Any):
+    payload = _structured_payload(
+        prediction="INSUFFICIENT_CONTEXT",
+        confidence=0,
+        reason=reason,
+        error=reason,
+        **extra,
+    )
+    return jsonify(payload), status_code
 
 
 def _predict_payload(
@@ -139,6 +195,7 @@ def _predict_payload(
     response = {
         "prediction": result["prediction"],
         "confidence": result["confidence"],
+        "reason": _build_prediction_reason(result["prediction"], source=source),
         "top_fake_words": result["explanation"].get("top_fake_words", []),
         "top_real_words": result["explanation"].get("top_real_words", []),
         "explanation": result["explanation"],
@@ -239,18 +296,18 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         )
 
         if not isinstance(text, str) or not text.strip():
-            return jsonify({"error": "Input text is required."}), 400
+            return _error_payload("Input text is required.")
         if len(text) > app.config["MAX_INPUT_CHARS"]:
-            return jsonify({"error": f"Input text too long. Max {app.config['MAX_INPUT_CHARS']} characters."}), 400
+            return _error_payload(f"Input text too long. Max {app.config['MAX_INPUT_CHARS']} characters.")
 
         original_word_count = len(text.split())
         if original_word_count < 12:
             return jsonify(
-                {
-                    "prediction": "INSUFFICIENT_CONTEXT",
-                    "confidence": 0,
-                    "message": "Input text is too short for reliable classification.",
-                }
+                _structured_payload(
+                    prediction="INSUFFICIENT_CONTEXT",
+                    confidence=0,
+                    reason="Input text is too short for reliable classification.",
+                )
             )
         preprocessed_text, _ = _preprocess_and_count_tokens(text)
 
@@ -267,9 +324,9 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         except ArtifactLoadError as exc:
             return _artifact_error_response(app, exc)
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return _error_payload(str(exc))
         except Exception as exc:
-            return jsonify({"error": f"Prediction failed: {exc}"}), 500
+            return _error_payload(f"Prediction failed: {exc}", status_code=500)
 
     @app.post("/analyze_url")
     def analyze_url():
@@ -282,7 +339,44 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         )
 
         if not isinstance(url, str) or not url.strip():
-            return jsonify({"error": "A valid URL is required."}), 400
+            return _error_payload("A valid URL is required.")
+
+        domain = _get_domain(url)
+        if _is_non_article_url(url):
+            return jsonify(
+                _structured_payload(
+                    prediction="INSUFFICIENT_CONTEXT",
+                    confidence=0,
+                    reason="Content extraction failed or insufficient text for a non-article URL.",
+                    url=url,
+                    domain=domain,
+                    article_preview="",
+                    article_char_count=0,
+                )
+            )
+
+        domain_assessment = _classify_domain(url)
+        if domain_assessment:
+            payload = _structured_payload(
+                prediction=domain_assessment["prediction"],
+                confidence=domain_assessment["confidence"],
+                reason=domain_assessment["reason"],
+                url=url,
+                domain=domain_assessment["domain"],
+                article_preview="",
+                article_char_count=0,
+            )
+            _append_jsonl(
+                app.config["ANALYTICS_LOG_PATH"],
+                {
+                    "source": "url",
+                    "url": url,
+                    "prediction": payload["prediction"],
+                    "confidence": payload["confidence"],
+                    "reason": payload["reason"],
+                },
+            )
+            return jsonify(payload)
 
         article_fetcher: Callable[[str], str | dict[str, Any]] = app.config.get(
             "ARTICLE_FETCHER",
@@ -292,24 +386,30 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         try:
             article_result = article_fetcher(url)
             if isinstance(article_result, dict):
-                status_code = _as_int(article_result.get("status_code"), default=400)
-                return jsonify({"error": article_result.get("error", "Unable to analyze URL.")}), status_code
+                article_text = article_result.get("text", "")
+            else:
+                article_text = article_result
 
-            article_text = article_result
-            if not isinstance(article_text, str) or not article_text.strip():
-                return jsonify({"error": "Unable to extract article text from this URL."}), 400
+            article_text = article_text if isinstance(article_text, str) else ""
+            article_text = article_text.strip()
+            if len(article_text) < 50:
+                return jsonify(
+                    _structured_payload(
+                        prediction="INSUFFICIENT_CONTEXT",
+                        confidence=0,
+                        reason="Content extraction failed or insufficient text.",
+                        url=url,
+                        domain=domain,
+                        article_preview=article_text[:350],
+                        article_char_count=len(article_text),
+                    )
+                )
 
             if len(article_text) > app.config["MAX_INPUT_CHARS"]:
-                return (
-                    jsonify(
-                        {
-                            "error": (
-                                f"Article text too long after extraction. "
-                                f"Max {app.config['MAX_INPUT_CHARS']} characters."
-                            )
-                        }
-                    ),
-                    400,
+                return _error_payload(
+                    f"Article text too long after extraction. Max {app.config['MAX_INPUT_CHARS']} characters.",
+                    url=url,
+                    domain=domain,
                 )
             prediction = _predict_payload(
                 app,
@@ -322,6 +422,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             return jsonify(
                 {
                     "url": url,
+                    "domain": domain,
                     "article_preview": article_text[:350],
                     "article_char_count": len(article_text),
                     **prediction,
@@ -330,8 +431,8 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         except ArtifactLoadError as exc:
             return _artifact_error_response(app, exc)
         except ValueError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return _error_payload(str(exc), url=url, domain=domain)
         except Exception as exc:
-            return jsonify({"error": f"URL analysis failed: {exc}"}), 500
+            return _error_payload(f"URL analysis failed: {exc}", status_code=500, url=url, domain=domain)
 
     return app
