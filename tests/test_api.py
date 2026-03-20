@@ -4,6 +4,23 @@ def test_root_renders_index_html(client):
     assert "text/html" in response.content_type
 
 
+def test_root_head_returns_fast_ok(client):
+    response = client.head("/")
+    assert response.status_code == 200
+    assert response.get_data(as_text=True) == ""
+
+
+def test_root_returns_ok_when_template_missing(test_app, tmp_path):
+    test_app.template_folder = str(tmp_path / "missing_templates")
+
+    with test_app.test_client() as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.get_data(as_text=True) == "OK"
+    assert "text/plain" in response.content_type
+
+
 def test_version_route_returns_new_version(client):
     response = client.get("/version")
     assert response.status_code == 200

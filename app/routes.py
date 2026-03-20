@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 from typing import Any, Callable
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 from jinja2 import TemplateNotFound
 
 from app.model_loader import (
@@ -72,6 +72,10 @@ def _artifact_error_response(app: Flask, exc: ArtifactLoadError):
         ),
         503,
     )
+
+
+def _ok_response() -> Response:
+    return Response("OK", mimetype="text/plain")
 
 
 def _append_jsonl(log_path: str | Path, payload: dict[str, Any]) -> None:
@@ -178,22 +182,21 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
     model_path, vectorizer_path = _resolve_artifact_paths(app.config)
     app.extensions["model_artifacts"] = create_artifact_loader(model_path, vectorizer_path)
 
-    @app.get("/")
+    @app.route("/", methods=["GET", "HEAD"])
     def index():
+        if request.method == "HEAD":
+            return _ok_response()
+
+        template_path = Path(app.template_folder or "") / "index.html"
+        if not template_path.is_file():
+            app.logger.warning("index_template_missing path=%s", template_path)
+            return _ok_response()
+
         try:
             return render_template("index.html")
-        except TemplateNotFound as exc:
-            return (
-                jsonify(
-                    {
-                        "error": "Template 'index.html' not found.",
-                        "template_folder": app.template_folder,
-                        "expected_template": "index.html",
-                        "details": str(exc),
-                    }
-                ),
-                500,
-            )
+        except TemplateNotFound:
+            app.logger.warning("index_template_not_found template_folder=%s", app.template_folder)
+            return _ok_response()
 
     @app.get("/version")
     def version():
