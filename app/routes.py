@@ -342,19 +342,6 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             return _error_payload("A valid URL is required.")
 
         domain = _get_domain(url)
-        if _is_non_article_url(url):
-            return jsonify(
-                _structured_payload(
-                    prediction="INSUFFICIENT_CONTEXT",
-                    confidence=0,
-                    reason="Content extraction failed or insufficient text for a non-article URL.",
-                    url=url,
-                    domain=domain,
-                    article_preview="",
-                    article_char_count=0,
-                )
-            )
-
         domain_assessment = _classify_domain(url)
         if domain_assessment:
             payload = _structured_payload(
@@ -378,6 +365,19 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             )
             return jsonify(payload)
 
+        if _is_non_article_url(url):
+            return jsonify(
+                _structured_payload(
+                    prediction="INSUFFICIENT_CONTEXT",
+                    confidence=0,
+                    reason="Content extraction failed or insufficient text.",
+                    url=url,
+                    domain=domain,
+                    article_preview="",
+                    article_char_count=0,
+                )
+            )
+
         article_fetcher: Callable[[str], str | dict[str, Any]] = app.config.get(
             "ARTICLE_FETCHER",
             _fetch_article_text,
@@ -392,7 +392,7 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
 
             article_text = article_text if isinstance(article_text, str) else ""
             article_text = article_text.strip()
-            if len(article_text) < 50:
+            if not article_text or len(article_text) < 30:
                 return jsonify(
                     _structured_payload(
                         prediction="INSUFFICIENT_CONTEXT",

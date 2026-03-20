@@ -29,14 +29,10 @@ FAKE_SOURCE_HOSTS = (
     "beforeitsnews.com",
     "worldnewsdailyreport.com",
 )
-NON_ARTICLE_PATHS = frozenset(
-    {
-        "",
-        "/",
-        "/news",
-        "/world",
-        "/india",
-    }
+SOCIAL_SOURCE_HOSTS = (
+    "youtube.com",
+    "twitter.com",
+    "x.com",
 )
 TRUSTED_SOURCE_ALIASES = (
     "bbc",
@@ -60,8 +56,8 @@ MISINFORMATION_PATTERNS = (
     ("hidden technology", re.compile(r"\bhidden\W+technology\b", re.IGNORECASE)),
     ("leaked documents reveal", re.compile(r"\bleaked\W+documents\W+reveal\b", re.IGNORECASE)),
 )
-MIN_ARTICLE_CHARS = 50
-MIN_ARTICLE_TOKENS = 10
+MIN_ARTICLE_CHARS = 30
+MIN_ARTICLE_TOKENS = 5
 KEYWORD_FAKE_BOOST_PER_MATCH = 0.03
 MAX_KEYWORD_FAKE_BOOST = 0.15
 UNCERTAIN_LOWER = 0.45
@@ -105,8 +101,8 @@ def _parse_source_host(source_url: str | None) -> str:
         return ""
 
 
-def _domain_matches(host: str, domains: tuple[str, ...]) -> bool:
-    return any(host == domain or host.endswith(f".{domain}") for domain in domains)
+def is_domain_match(domain: str, sources: tuple[str, ...] | list[str]) -> bool:
+    return any(site in domain for site in sources)
 
 
 def get_domain(url: str) -> str:
@@ -124,7 +120,15 @@ def classify_domain(url: str) -> dict[str, Any] | None:
     if not domain:
         return None
 
-    if _domain_matches(domain, FAKE_SOURCE_HOSTS):
+    if is_domain_match(domain, SOCIAL_SOURCE_HOSTS):
+        return {
+            "domain": domain,
+            "prediction": "INSUFFICIENT_CONTEXT",
+            "confidence": 0,
+            "reason": "Social media content not suitable for analysis.",
+        }
+
+    if is_domain_match(domain, FAKE_SOURCE_HOSTS):
         return {
             "domain": domain,
             "prediction": "FAKE",
@@ -132,7 +136,7 @@ def classify_domain(url: str) -> dict[str, Any] | None:
             "reason": "Known low-credibility domain matched before content extraction.",
         }
 
-    if _domain_matches(domain, TRUSTED_SOURCE_HOSTS):
+    if is_domain_match(domain, TRUSTED_SOURCE_HOSTS):
         return {
             "domain": domain,
             "prediction": "REAL",
@@ -147,11 +151,7 @@ def is_non_article_url(url: str) -> bool:
     if not isinstance(url, str):
         return True
 
-    parsed = urlparse(url)
-    path = (parsed.path or "").strip().lower().rstrip("/")
-    if path in {"", "/"}:
-        return True
-    return path in NON_ARTICLE_PATHS
+    return url.count("/") <= 3
 
 
 def _is_trusted_source_name(source_name: str) -> bool:

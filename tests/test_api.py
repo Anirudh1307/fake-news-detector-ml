@@ -54,12 +54,12 @@ def test_predict_endpoint_validation(client):
 def test_analyze_url_endpoint_success(client):
     response = client.post(
         "/analyze_url",
-        json={"url": "https://example.com/story", "include_shap": False, "include_lime": False},
+        json={"url": "https://example.com/news/story", "include_shap": False, "include_lime": False},
     )
     assert response.status_code == 200
 
     payload = response.get_json()
-    assert payload["url"] == "https://example.com/story"
+    assert payload["url"] == "https://example.com/news/story"
     assert payload["domain"] == "example.com"
     assert "article_preview" in payload
     assert payload["prediction"].startswith(("FAKE", "REAL"))
@@ -79,6 +79,32 @@ def test_analyze_url_shortcuts_trusted_domains(test_app):
     assert payload["domain"] == "bbc.com"
 
 
+def test_analyze_url_shortcuts_fake_domains(test_app):
+    test_app.config["ARTICLE_FETCHER"] = lambda _: (_ for _ in ()).throw(AssertionError("extractor should not run"))
+
+    with test_app.test_client() as client:
+        response = client.post("/analyze_url", json={"url": "https://www.beforeitsnews.com/"})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["prediction"] == "FAKE"
+    assert payload["confidence"] == 80
+    assert payload["domain"] == "beforeitsnews.com"
+
+
+def test_analyze_url_returns_insufficient_context_for_social_domains(test_app):
+    test_app.config["ARTICLE_FETCHER"] = lambda _: (_ for _ in ()).throw(AssertionError("extractor should not run"))
+
+    with test_app.test_client() as client:
+        response = client.post("/analyze_url", json={"url": "https://www.youtube.com/watch?v=123"})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["prediction"] == "INSUFFICIENT_CONTEXT"
+    assert payload["confidence"] == 0
+    assert payload["reason"] == "Social media content not suitable for analysis."
+
+
 def test_analyze_url_returns_insufficient_context_for_non_article_url(client):
     response = client.post("/analyze_url", json={"url": "https://example.com/"})
     assert response.status_code == 200
@@ -92,13 +118,25 @@ def test_analyze_url_returns_insufficient_context_when_extraction_fails(test_app
     test_app.config["ARTICLE_FETCHER"] = lambda _: ""
 
     with test_app.test_client() as client:
-        response = client.post("/analyze_url", json={"url": "https://example.com/story"})
+        response = client.post("/analyze_url", json={"url": "https://example.com/news/story"})
 
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["prediction"] == "INSUFFICIENT_CONTEXT"
     assert payload["confidence"] == 0
     assert "reason" in payload
+
+
+def test_analyze_url_allows_shorter_but_usable_extraction_text(test_app):
+    test_app.config["ARTICLE_FETCHER"] = lambda _: "This report cites named sources and supporting facts."
+
+    with test_app.test_client() as client:
+        response = client.post("/analyze_url", json={"url": "https://example.com/news/story"})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["prediction"].startswith(("FAKE", "REAL"))
+    assert payload["article_char_count"] >= 30
 
 
 def test_analytics_endpoint(client):
