@@ -64,6 +64,15 @@ LOW_QUALITY_PATTERNS = (
     "login",
     "access benefits",
 )
+VAGUE_PATTERNS = (
+    "many people",
+    "some say",
+    "it is believed",
+    "reports suggest",
+    "people are talking",
+    "nothing confirmed",
+    "details emerging",
+)
 UNCERTAIN_LOWER = 0.45
 UNCERTAIN_UPPER = 0.55
 SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+")
@@ -268,6 +277,11 @@ def _contains_uncertainty(raw_text: str) -> bool:
     return any(f" {indicator} " in normalized for indicator in UNCERTAINTY_INDICATORS)
 
 
+def _contains_vague_language(raw_text: str) -> bool:
+    normalized = str(raw_text or "").lower()
+    return any(pattern in normalized for pattern in VAGUE_PATTERNS)
+
+
 def _calibrate_confidence(prob: float, source_score: float) -> int:
     confidence = abs(float(prob) - 0.5) * 100
     if source_score != 0:
@@ -364,9 +378,26 @@ def run_prediction(
         + (HYBRID_SOURCE_WEIGHT * source_score)
     )
     confidence = _calibrate_confidence(prob, source_score)
+    vague_detected = _contains_vague_language(raw_text)
     uncertainty_detected = _contains_uncertainty(raw_text) or (45 <= confidence <= 60)
 
-    if uncertainty_detected:
+    if vague_detected:
+        label = "UNCERTAIN"
+        prediction_id = -1
+        confidence = 45
+    elif confidence <= 45 and keyword_score == 0 and not matched_fake_keywords:
+        label = "REAL"
+        prediction_id = 1
+        confidence = 40
+    elif confidence < 45:
+        if keyword_score == 0:
+            label = "REAL"
+            prediction_id = 1
+            confidence = 40
+        else:
+            label = "UNCERTAIN"
+            prediction_id = -1
+    elif uncertainty_detected:
         label = "UNCERTAIN"
         prediction_id = -1
         confidence = max(45, min(confidence, 60))
@@ -408,6 +439,7 @@ def run_prediction(
         "final_score": round(final_score, 4),
         "matched_misinformation_keywords": matched_fake_keywords,
         "uncertainty_detected": uncertainty_detected,
+        "vague_detected": vague_detected,
         "strong_fake_match": strong_fake_match,
     }
 
