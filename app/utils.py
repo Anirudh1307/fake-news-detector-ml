@@ -19,11 +19,7 @@ TRUSTED_SOURCE_HOSTS = (
     "bbc.com",
     "reuters.com",
     "thehindu.com",
-    "indianexpress.com",
-    "gov.in",
-    "apnews.com",
-    "nytimes.com",
-    "theguardian.com",
+    "ndtv.com",
 )
 FAKE_SOURCE_HOSTS = (
     "beforeitsnews.com",
@@ -33,28 +29,6 @@ SOCIAL_SOURCE_HOSTS = (
     "youtube.com",
     "twitter.com",
     "x.com",
-)
-TRUSTED_SOURCE_ALIASES = (
-    "bbc",
-    "reuters",
-    "associated press",
-    "ap news",
-    "apnews",
-    "new york times",
-    "nytimes",
-    "the guardian",
-)
-MISINFORMATION_PATTERNS = (
-    ("secret cure", re.compile(r"\bsecret\W+cure\b", re.IGNORECASE)),
-    ("miracle cure", re.compile(r"\bmiracle\W+cure\b", re.IGNORECASE)),
-    ("government conspiracy", re.compile(r"\bgovernment\W+conspiracy\b", re.IGNORECASE)),
-    ("shocking truth", re.compile(r"\bshocking\W+truth\b", re.IGNORECASE)),
-    (
-        "they don't want you to know",
-        re.compile(r"\bthey\W+don\W*t\W+want\W+you\W+to\W+know\b", re.IGNORECASE),
-    ),
-    ("hidden technology", re.compile(r"\bhidden\W+technology\b", re.IGNORECASE)),
-    ("leaked documents reveal", re.compile(r"\bleaked\W+documents\W+reveal\b", re.IGNORECASE)),
 )
 REAL_KEYWORDS = (
     "official",
@@ -77,21 +51,28 @@ STRONG_FAKE_CLAIMS = (
     "miracle cure",
     "time travel",
 )
-MIN_ARTICLE_CHARS = 30
-MIN_ARTICLE_TOKENS = 5
-KEYWORD_FAKE_BOOST_PER_MATCH = 0.03
-MAX_KEYWORD_FAKE_BOOST = 0.15
+MIN_DIRECT_TEXT_CHARS = 20
+MIN_URL_EXTRACTION_CHARS = 200
+MIN_URL_WORDS = 50
+LOW_QUALITY_PATTERNS = (
+    "sign in",
+    "subscribe",
+    "advertisement",
+    "ad blocker",
+    "cookies",
+    "newsletter",
+    "login",
+    "access benefits",
+)
 UNCERTAIN_LOWER = 0.45
 UNCERTAIN_UPPER = 0.55
 SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+")
 ML_WEIGHT = 0.6
 HYBRID_KEYWORD_WEIGHT = 0.2
 HYBRID_SOURCE_WEIGHT = 0.2
-NEUTRAL_SOURCE_SCORE = 0.5
 NEUTRAL_FACTCHECK_SCORE = 0.5
-GNEWS_TRUSTED_MATCH_BONUS = 0.1
-TRUSTED_DOMAIN_SCORE_BOOST = 0.1
-FAKE_DOMAIN_SCORE_PENALTY = -0.1
+TRUSTED_DOMAIN_SCORE_BOOST = 1.0
+FAKE_DOMAIN_SCORE_PENALTY = -1.0
 UNCERTAINTY_INDICATORS = (
     "may",
     "might",
@@ -131,7 +112,8 @@ def _parse_source_host(source_url: str | None) -> str:
 
 
 def is_domain_match(domain: str, sources: tuple[str, ...] | list[str]) -> bool:
-    return any(site in domain for site in sources)
+    normalized = (domain or "").strip().lower()
+    return any(normalized == site or normalized.endswith(f".{site}") for site in sources)
 
 
 def get_domain(url: str) -> str:
@@ -184,53 +166,6 @@ def is_non_article_url(url: str) -> bool:
     return url.count("/") <= 3
 
 
-def _is_trusted_source_name(source_name: str) -> bool:
-    normalized = (source_name or "").strip().lower()
-    if not normalized:
-        return False
-    return any(alias in normalized for alias in TRUSTED_SOURCE_ALIASES)
-
-
-def _extract_keyword_query(raw_text: str, max_keywords: int = 8) -> tuple[str, set[str]]:
-    from app.preprocessing import preprocess_text
-
-    processed = preprocess_text(raw_text, remove_stopwords=True, apply_lemmatization=False)
-    tokens = [token for token in processed.split() if len(token) >= 3]
-
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for token in tokens:
-        if token in seen:
-            continue
-        seen.add(token)
-        deduped.append(token)
-        if len(deduped) >= max_keywords:
-            break
-
-    if not deduped:
-        fallback_tokens = re.findall(r"[a-zA-Z]{4,}", raw_text.lower())
-        for token in fallback_tokens:
-            if token in seen:
-                continue
-            seen.add(token)
-            deduped.append(token)
-            if len(deduped) >= max_keywords:
-                break
-
-    return " ".join(deduped), set(deduped)
-
-
-def _article_matches_keywords(article: dict[str, str], keyword_set: set[str]) -> bool:
-    if not keyword_set:
-        return False
-
-    combined = f"{article.get('title', '')} {article.get('description', '')}".lower()
-    article_tokens = set(re.findall(r"[a-zA-Z]{3,}", combined))
-    overlap = len(article_tokens.intersection(keyword_set))
-    minimum_overlap = 1 if len(keyword_set) <= 4 else 2
-    return overlap >= minimum_overlap
-
-
 def _extract_claim(raw_text: str) -> str:
     if not isinstance(raw_text, str):
         return ""
@@ -258,48 +193,27 @@ def _factcheck_rating_to_real_score(rating: str) -> float:
     return NEUTRAL_FACTCHECK_SCORE
 
 
-def _build_source_score(source_url: str | None, raw_text: str) -> tuple[float, bool, bool, str, bool, int, str]:
+def _build_source_score(source_url: str | None) -> tuple[float, bool, bool, str, bool, int, str]:
     host = _parse_source_host(source_url)
     domain_assessment = classify_domain(source_url or "")
     trusted_source_match = bool(domain_assessment and domain_assessment.get("classification") == "TRUSTED_DOMAIN")
     fake_source_match = bool(domain_assessment and domain_assessment.get("classification") == "FAKE_DOMAIN")
 
-    source_score = 0.0
-    query, keyword_set = _extract_keyword_query(raw_text)
-    gnews_articles: list[dict[str, str]] = []
-    gnews_trusted_match = False
-
-    if query:
-        try:
-            from app.apis.gnews_client import search_news
-
-            gnews_articles = search_news(query)
-        except Exception:
-            LOGGER.exception("gnews_enrichment_failed")
-            gnews_articles = []
-
-    for article in gnews_articles:
-        source_name = article.get("source", "")
-        if _is_trusted_source_name(source_name) and _article_matches_keywords(article, keyword_set):
-            gnews_trusted_match = True
-            break
-
     if trusted_source_match:
-        source_score += TRUSTED_DOMAIN_SCORE_BOOST
+        source_score = TRUSTED_DOMAIN_SCORE_BOOST
     elif fake_source_match:
-        source_score += FAKE_DOMAIN_SCORE_PENALTY
-
-    if gnews_trusted_match:
-        source_score += GNEWS_TRUSTED_MATCH_BONUS
+        source_score = FAKE_DOMAIN_SCORE_PENALTY
+    else:
+        source_score = 0.0
 
     return (
         float(np.clip(source_score, -1.0, 1.0)),
         trusted_source_match,
         fake_source_match,
         host,
-        gnews_trusted_match,
-        len(gnews_articles),
-        query,
+        False,
+        0,
+        "",
     )
 
 
@@ -307,13 +221,10 @@ def _build_keyword_score(raw_text: str) -> tuple[float, float, list[str], list[s
     text = str(raw_text or "").lower()
     real_matches = [word for word in REAL_KEYWORDS if re.search(rf"\b{re.escape(word)}\b", text)]
     fake_matches = [word for word in FAKE_KEYWORDS if re.search(rf"\b{re.escape(word)}\b", text)]
-    keyword_fake_boost, matched_patterns = _misinformation_fake_boost(raw_text)
-
-    fake_terms = list(dict.fromkeys(fake_matches + matched_patterns))
-    real_score = min(0.4, 0.08 * len(real_matches))
-    fake_score = min(0.6, (0.12 * len(fake_matches)) + keyword_fake_boost)
+    real_score = len(real_matches) / len(REAL_KEYWORDS) if REAL_KEYWORDS else 0.0
+    fake_score = len(fake_matches) / len(FAKE_KEYWORDS) if FAKE_KEYWORDS else 0.0
     keyword_score = float(np.clip(real_score - fake_score, -1.0, 1.0))
-    return keyword_score, fake_score, real_matches, fake_terms
+    return keyword_score, fake_score, real_matches, fake_matches
 
 
 def get_top_words(vectorizer, text: str, top_n: int = 5) -> list[str]:
@@ -352,13 +263,6 @@ def _build_factcheck_score(raw_text: str) -> tuple[float, str, str, int]:
     return factcheck_score, claim, primary_rating, len(reviews)
 
 
-def _misinformation_fake_boost(raw_text: str) -> tuple[float, list[str]]:
-    text = raw_text or ""
-    matched = [label for label, pattern in MISINFORMATION_PATTERNS if pattern.search(text)]
-    boost = min(MAX_KEYWORD_FAKE_BOOST, KEYWORD_FAKE_BOOST_PER_MATCH * len(matched))
-    return float(boost), matched
-
-
 def _contains_uncertainty(raw_text: str) -> bool:
     normalized = f" {str(raw_text or '').lower()} "
     return any(f" {indicator} " in normalized for indicator in UNCERTAINTY_INDICATORS)
@@ -366,9 +270,7 @@ def _contains_uncertainty(raw_text: str) -> bool:
 
 def _calibrate_confidence(prob: float, source_score: float) -> int:
     confidence = abs(float(prob) - 0.5) * 100
-    if source_score > 0:
-        confidence += 5
-    elif source_score < 0:
+    if source_score != 0:
         confidence += 5
     return int(round(min(max(confidence, 40), 90)))
 
@@ -388,7 +290,7 @@ def run_prediction(
     preprocessed_text = preprocessed_text if preprocessed_text is not None else preprocess_text(raw_text)
     if not preprocessed_text:
         raise ValueError("Input text does not contain usable language tokens.")
-    if len(str(raw_text or "").strip()) < 20:
+    if len(str(raw_text or "").strip()) < MIN_DIRECT_TEXT_CHARS:
         return {
             "prediction": "INSUFFICIENT_CONTEXT",
             "prediction_id": -1,
@@ -397,7 +299,51 @@ def run_prediction(
             "explanation": {"hybrid_signals": {}},
         }
 
-    ml_real_score, model_confidence = _ml_scores(model, vectorizer, preprocessed_text)
+    lowered_text = str(raw_text or "").lower()
+    strong_fake_match = [phrase for phrase in STRONG_FAKE_CLAIMS if phrase in lowered_text]
+    if strong_fake_match:
+        explanation = build_explanation_payload(
+            raw_text=raw_text,
+            preprocessed_text=preprocessed_text,
+            model=model,
+            vectorizer=vectorizer,
+            include_shap=include_shap,
+            include_lime=include_lime,
+        )
+        explanation["hybrid_signals"] = {
+            "ml_real_score": 0.0,
+            "source_host": _parse_source_host(source_url),
+            "trusted_source_boost": 0.0,
+            "fake_source_penalty": 0.0,
+            "trusted_source_match": False,
+            "fake_source_match": False,
+            "source_score": 0.0,
+            "gnews_query": "",
+            "gnews_results_count": 0,
+            "gnews_trusted_match": False,
+            "model_confidence": 85,
+            "model_probability": 0.5,
+            "keyword_score": 0.0,
+            "keyword_fake_boost": 0.0,
+            "matched_real_keywords": [],
+            "factcheck_score": round(NEUTRAL_FACTCHECK_SCORE, 4),
+            "factcheck_rating": "",
+            "factcheck_results_count": 0,
+            "extracted_claim": _extract_claim(raw_text),
+            "final_score": -1.0,
+            "matched_misinformation_keywords": [],
+            "uncertainty_detected": False,
+            "strong_fake_match": strong_fake_match,
+        }
+        return {
+            "prediction": "FAKE",
+            "prediction_id": 0,
+            "confidence": 85,
+            "preprocessed_text": preprocessed_text,
+            "explanation": explanation,
+        }
+
+    ml_real_score, _ = _ml_scores(model, vectorizer, preprocessed_text)
     (
         source_score,
         trusted_source,
@@ -406,15 +352,12 @@ def run_prediction(
         gnews_trusted_match,
         gnews_results_count,
         gnews_query,
-    ) = _build_source_score(source_url, raw_text)
+    ) = _build_source_score(source_url)
     keyword_score, keyword_fake_boost, matched_real_keywords, matched_fake_keywords = _build_keyword_score(raw_text)
     factcheck_score, extracted_claim, factcheck_rating, factcheck_results_count = _build_factcheck_score(raw_text)
 
-    lowered_text = str(raw_text or "").lower()
-    strong_fake_match = [phrase for phrase in STRONG_FAKE_CLAIMS if phrase in lowered_text]
-
-    prob = min(float(ml_real_score), 0.85)
-    model_score = prob - 0.5
+    prob = float(ml_real_score)
+    model_score = (prob - 0.5) * 2.0
     final_score = (
         (ML_WEIGHT * model_score)
         + (HYBRID_KEYWORD_WEIGHT * keyword_score)
@@ -423,12 +366,7 @@ def run_prediction(
     confidence = _calibrate_confidence(prob, source_score)
     uncertainty_detected = _contains_uncertainty(raw_text) or (45 <= confidence <= 60)
 
-    if strong_fake_match:
-        label = "FAKE"
-        prediction_id = 0
-        confidence = 85
-        final_score = -1.0
-    elif uncertainty_detected:
+    if uncertainty_detected:
         label = "UNCERTAIN"
         prediction_id = -1
         confidence = max(45, min(confidence, 60))
@@ -473,10 +411,6 @@ def run_prediction(
         "strong_fake_match": strong_fake_match,
     }
 
-    print(f"source score: {source_score}")
-    print(f"ML probability: {prob}")
-    print(f"final score: {final_score}")
-
     return {
         "prediction": label.upper(),
         "prediction_id": prediction_id,
@@ -496,13 +430,19 @@ def _clean_extracted_text(text: str) -> str:
     return cleaned
 
 
-def _is_sufficient_article_text(text: str) -> bool:
+def assess_extracted_article_text(text: str) -> dict[str, Any]:
     cleaned = _clean_extracted_text(text)
-    if len(cleaned) < MIN_ARTICLE_CHARS:
-        return False
-    if len(cleaned.split()) < MIN_ARTICLE_TOKENS:
-        return False
-    return True
+    lowered = cleaned.lower()
+    word_count = len(cleaned.split())
+    bad_pattern_count = sum(1 for pattern in LOW_QUALITY_PATTERNS if pattern in lowered)
+    return {
+        "cleaned_text": cleaned,
+        "char_count": len(cleaned),
+        "word_count": word_count,
+        "bad_pattern_count": bad_pattern_count,
+        "is_short_for_fallback": len(cleaned) < MIN_URL_EXTRACTION_CHARS,
+        "is_low_quality": word_count < MIN_URL_WORDS or bad_pattern_count >= 2,
+    }
 
 
 def _download_html(url: str) -> str:
@@ -529,10 +469,10 @@ def _extract_with_newspaper(url: str) -> str:
     return _clean_extracted_text(article.text or "")
 
 
-def _extract_with_trafilatura(url: str) -> str:
+def _extract_with_trafilatura(url: str, html: str | None = None) -> str:
     import trafilatura  # type: ignore
 
-    downloaded = trafilatura.fetch_url(url)
+    downloaded = html if isinstance(html, str) and html else trafilatura.fetch_url(url)
     if not downloaded:
         return ""
     extracted = trafilatura.extract(downloaded, include_comments=False, include_tables=False)
@@ -547,44 +487,68 @@ def _extract_with_readability(url: str) -> str:
     return _clean_extracted_text(doc.summary())
 
 
-def _extract_with_bs4(url: str) -> str:
+def _extract_with_bs4(url: str, html: str | None = None) -> str:
     from bs4 import BeautifulSoup  # type: ignore
 
-    html = _download_html(url)
+    html = html if isinstance(html, str) and html else _download_html(url)
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
 
-    paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p")]
+    paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p") if len(p.get_text(" ", strip=True)) > 30]
     text = " ".join(paragraphs)
     return _clean_extracted_text(text)
 
 
 def fetch_article_text(url: str) -> str | dict[str, Any]:
+    html = ""
+    try:
+        html = _download_html(url)
+    except Exception:
+        LOGGER.exception("html_download_failed url=%s", url)
+
     extraction_stages = [
-        ("trafilatura", _extract_with_trafilatura),
+        ("trafilatura", lambda target_url: _extract_with_trafilatura(target_url, html=html)),
         ("newspaper3k", _extract_with_newspaper),
-        ("bs4", _extract_with_bs4),
+        ("bs4", lambda target_url: _extract_with_bs4(target_url, html=html)),
     ]
+    saw_low_quality_text = False
 
     for stage_name, extractor in extraction_stages:
         try:
             extracted = extractor(url)
-            if _is_sufficient_article_text(extracted):
+            quality = assess_extracted_article_text(extracted)
+            cleaned_text = quality["cleaned_text"]
+
+            if cleaned_text and not quality["is_short_for_fallback"] and not quality["is_low_quality"]:
                 LOGGER.info("extractor=%s url=%s", stage_name, url)
-                return _clean_extracted_text(extracted)
+                return cleaned_text
+
+            if cleaned_text:
+                saw_low_quality_text = True
+
             LOGGER.warning(
-                "extractor=%s insufficient_text url=%s chars=%s tokens=%s",
+                "extractor=%s weak_text url=%s chars=%s words=%s bad_patterns=%s",
                 stage_name,
                 url,
-                len(extracted),
-                len(extracted.split()),
+                quality["char_count"],
+                quality["word_count"],
+                quality["bad_pattern_count"],
             )
         except Exception:
             LOGGER.exception("extractor=%s failed url=%s", stage_name, url)
 
+    if saw_low_quality_text:
+        return {
+            "prediction": "UNCERTAIN",
+            "confidence": 45,
+            "error": "Low quality extracted content",
+        }
+
     return {
-        "error": "Could not extract article",
+        "prediction": "UNCERTAIN",
+        "confidence": 40,
+        "error": "Unable to extract article",
     }
 
 

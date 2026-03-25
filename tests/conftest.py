@@ -9,6 +9,16 @@ from app.preprocessing import preprocess_corpus
 from app.routes import create_app
 
 
+def _long_article_text() -> str:
+    return (
+        "Official government data according to a detailed report from the finance ministry shows steady "
+        "employment growth across several states. The report explains that public records, audited figures, "
+        "and district level data were reviewed over multiple months. Officials said the findings match "
+        "independent surveys, and the document includes dates, named sources, and methodology for each "
+        "section of the analysis so readers can verify the context without relying on rumors or anonymous posts."
+    )
+
+
 def _build_test_model_artifacts(tmp_path: Path) -> tuple[Path, Path]:
     texts = [
         "This claim is entirely fabricated and false",
@@ -40,7 +50,7 @@ def test_app(tmp_path):
             "MODEL_PATH": str(model_path),
             "VECTORIZER_PATH": str(vectorizer_path),
             "ANALYTICS_LOG_PATH": str(tmp_path / "prediction_logs.jsonl"),
-            "ARTICLE_FETCHER": lambda _: "Government records confirm economic growth and policy impact.",
+            "ARTICLE_FETCHER": lambda _: _long_article_text(),
         }
     )
     return app
@@ -50,4 +60,3 @@ def test_app(tmp_path):
 def client(test_app):
     with test_app.test_client() as test_client:
         yield test_client
-

@@ -99,6 +99,12 @@ def _fetch_article_text(url: str) -> str | dict[str, Any]:
     return fetch_article_text(url)
 
 
+def _assess_extracted_article_text(text: str) -> dict[str, Any]:
+    from app.utils import assess_extracted_article_text
+
+    return assess_extracted_article_text(text)
+
+
 def _get_domain(url: str) -> str:
     from app.utils import get_domain
 
@@ -414,12 +420,15 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
         try:
             article_result = article_fetcher(url)
             if isinstance(article_result, dict):
+                prediction = str(article_result.get("prediction") or "UNCERTAIN").upper()
+                confidence = int(article_result.get("confidence", 40))
+                error_message = article_result.get("error", "Unable to extract article")
                 return jsonify(
                     _structured_payload(
-                        prediction="UNCERTAIN",
-                        confidence=40,
-                        reason=article_result.get("error", "Could not extract article"),
-                        error=article_result.get("error", "Could not extract article"),
+                        prediction=prediction,
+                        confidence=confidence,
+                        reason=error_message,
+                        error=error_message,
                         url=url,
                         domain=domain,
                         article_preview="",
@@ -429,15 +438,30 @@ def create_app(config: dict[str, Any] | None = None) -> Flask:
             else:
                 article_text = article_result
 
-            article_text = article_text if isinstance(article_text, str) else ""
-            article_text = article_text.strip()
-            print(f"extracted text length: {len(article_text)}")
+            quality = _assess_extracted_article_text(article_text if isinstance(article_text, str) else "")
+            article_text = quality["cleaned_text"]
+
             if not article_text:
                 return jsonify(
                     _structured_payload(
-                        prediction="INSUFFICIENT_CONTEXT",
-                        confidence=0,
-                        reason="Content extraction failed or insufficient text.",
+                        prediction="UNCERTAIN",
+                        confidence=40,
+                        reason="Unable to extract article",
+                        error="Unable to extract article",
+                        url=url,
+                        domain=domain,
+                        article_preview="",
+                        article_char_count=0,
+                    )
+                )
+
+            if quality["is_low_quality"]:
+                return jsonify(
+                    _structured_payload(
+                        prediction="UNCERTAIN",
+                        confidence=45,
+                        reason="Low quality extracted content",
+                        error="Low quality extracted content",
                         url=url,
                         domain=domain,
                         article_preview=article_text[:350],

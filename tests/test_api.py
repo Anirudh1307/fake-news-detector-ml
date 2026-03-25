@@ -1,3 +1,23 @@
+def _long_real_article() -> str:
+    return (
+        "Official government data according to a detailed report from the finance ministry shows steady "
+        "employment growth across several states. The report explains that public records, audited figures, "
+        "and district level data were reviewed over multiple months. Officials said the findings match "
+        "independent surveys, and the document includes dates, named sources, and methodology for each "
+        "section of the analysis so readers can verify the context without relying on rumors or anonymous posts."
+    )
+
+
+def _long_fake_article() -> str:
+    return (
+        "Breaking stories on the site promote a shocking secret treatment that insiders exposed without any "
+        "official data, verifiable records, or transparent sourcing. The article repeats miracle language, "
+        "claims hidden groups are blocking the truth, and pushes a cure narrative without named experts, "
+        "documents, or public evidence. Readers are told the story was exposed by unknown sources and shared "
+        "widely before anyone could review the facts."
+    )
+
+
 def test_root_renders_index_html(client):
     response = client.get("/")
     assert response.status_code == 200
@@ -30,12 +50,12 @@ def test_version_route_returns_new_version(client):
 def test_predict_endpoint_success(client):
     response = client.post(
         "/predict",
-        json={"text": "Verified records support the policy claim.", "include_shap": False, "include_lime": False},
+        json={"text": _long_real_article(), "include_shap": False, "include_lime": False},
     )
     assert response.status_code == 200
 
     payload = response.get_json()
-    assert payload["prediction"].startswith(("FAKE", "REAL"))
+    assert payload["prediction"] in {"FAKE", "REAL", "UNCERTAIN"}
     assert "confidence" in payload
     assert "reason" in payload
     assert "top_fake_words" in payload
@@ -66,7 +86,7 @@ def test_analyze_url_endpoint_success(client):
     assert payload["url"] == "https://example.com/news/story"
     assert payload["domain"] == "example.com"
     assert "article_preview" in payload
-    assert payload["prediction"].startswith(("FAKE", "REAL"))
+    assert payload["prediction"] in {"FAKE", "REAL", "UNCERTAIN"}
     assert "reason" in payload
     assert isinstance(payload["top_fake_words"], list)
     assert isinstance(payload["top_real_words"], list)
@@ -75,7 +95,7 @@ def test_analyze_url_endpoint_success(client):
 
 
 def test_analyze_url_shortcuts_trusted_domains(test_app):
-    test_app.config["ARTICLE_FETCHER"] = lambda _: "Government records confirm economic growth and public policy impact."
+    test_app.config["ARTICLE_FETCHER"] = lambda _: _long_real_article()
 
     with test_app.test_client() as client:
         response = client.post("/analyze_url", json={"url": "https://www.bbc.com/news/world-123"})
@@ -83,13 +103,13 @@ def test_analyze_url_shortcuts_trusted_domains(test_app):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["domain"] == "bbc.com"
-    assert payload["prediction"] in {"REAL", "FAKE", "UNCERTAIN"}
+    assert payload["prediction"] == "REAL"
     assert payload["top_real_words"]
     assert "trusted_source" in payload["top_real_words"]
 
 
 def test_analyze_url_shortcuts_fake_domains(test_app):
-    test_app.config["ARTICLE_FETCHER"] = lambda _: "Unverified claim reportedly spreads online without evidence or proof."
+    test_app.config["ARTICLE_FETCHER"] = lambda _: _long_fake_article()
 
     with test_app.test_client() as client:
         response = client.post("/analyze_url", json={"url": "https://www.beforeitsnews.com/"})
@@ -97,7 +117,7 @@ def test_analyze_url_shortcuts_fake_domains(test_app):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["domain"] == "beforeitsnews.com"
-    assert payload["prediction"] in {"REAL", "FAKE", "UNCERTAIN"}
+    assert payload["prediction"] == "FAKE"
     assert payload["top_fake_words"]
     assert "low_credibility_domain" in payload["top_fake_words"]
 
@@ -123,8 +143,8 @@ def test_analyze_url_returns_insufficient_context_for_non_article_url(client):
     assert payload["prediction"] in {"REAL", "FAKE", "UNCERTAIN", "INSUFFICIENT_CONTEXT"}
 
 
-def test_analyze_url_returns_insufficient_context_when_extraction_fails(test_app):
-    test_app.config["ARTICLE_FETCHER"] = lambda _: {"error": "Could not extract article"}
+def test_analyze_url_returns_uncertain_when_extraction_fails(test_app):
+    test_app.config["ARTICLE_FETCHER"] = lambda _: {"prediction": "UNCERTAIN", "confidence": 40, "error": "Unable to extract article"}
 
     with test_app.test_client() as client:
         response = client.post("/analyze_url", json={"url": "https://example.com/news/story"})
@@ -133,18 +153,24 @@ def test_analyze_url_returns_insufficient_context_when_extraction_fails(test_app
     payload = response.get_json()
     assert payload["prediction"] == "UNCERTAIN"
     assert payload["confidence"] == 40
-    assert "reason" in payload
+    assert payload["error"] == "Unable to extract article"
+    assert payload["reason"] == "Unable to extract article"
 
 
-def test_analyze_url_allows_shorter_but_usable_extraction_text(test_app):
-    test_app.config["ARTICLE_FETCHER"] = lambda _: "This report cites named sources and supporting facts."
+def test_analyze_url_returns_uncertain_for_low_quality_extraction_text(test_app):
+    test_app.config["ARTICLE_FETCHER"] = (
+        lambda _: "Sign in to continue reading. Subscribe for newsletter access benefits and accept cookies. "
+        "Login now to read more of this advertisement and unlock members only access benefits."
+    )
 
     with test_app.test_client() as client:
         response = client.post("/analyze_url", json={"url": "https://example.com/news/story"})
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["prediction"] in {"REAL", "FAKE", "UNCERTAIN"}
+    assert payload["prediction"] == "UNCERTAIN"
+    assert payload["confidence"] == 45
+    assert payload["error"] == "Low quality extracted content"
     assert payload["article_char_count"] > 0
 
 
